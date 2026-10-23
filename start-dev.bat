@@ -1,5 +1,6 @@
 @echo off
 setlocal
+set "PORT=5001"
 title PosterFlow AI - Development Server
 
 set "PROJECT_ROOT=%~dp0"
@@ -120,11 +121,11 @@ if /I "%~1"=="--setup-only" (
     exit /b 0
 )
 
-echo [4/5] Starting backend at http://localhost:5000 ...
+echo [4/5] Starting backend at http://localhost:5001 ...
 start "PosterFlow AI Backend" /B "%VENV_PYTHON%" "%BACKEND_FILE%"
 timeout /T 2 /NOBREAK >nul
 
-echo [5/5] Starting frontend at http://localhost:3000 ...
+echo [5/5] Starting frontend at http://localhost:3001 ...
 echo.
 echo Keep this window open. Press Ctrl+C to stop the frontend.
 echo Close this window to finish the local development session.

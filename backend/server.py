@@ -125,7 +125,7 @@ ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv(
         "ALLOWED_ORIGINS",
-        "http://localhost:3000,http://127.0.0.1:3000",
+        "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001",
     ).split(",")
     if origin.strip()
 ]
@@ -153,6 +153,10 @@ CORS(
     allow_headers=[
         "Content-Type",
         "X-Provider-Api-Key",
+        "X-Music-Api-Key",
+        "X-Music-Endpoint",
+        "X-Music-Query-Template",
+        "X-Music-Auth-Type",
         "X-Provider-Endpoint",
         "X-Provider-Model",
         "X-Provider-Auth-Type",
@@ -1845,7 +1849,7 @@ def admin_bookkeeping():
             if result.get("code") == "BOOKKEEPING_CONFLICT":
                 raise ProviderError("BOOKKEEPING_CONFLICT", "记录已在其他窗口修改", 409, "请先重新加载最新记录，再修改保存。当前输入已保留。")
             raise ProviderError("BOOKKEEPING_SAVE_FAILED", "记账保存失败", 503)
-        return jsonify({"success": True, "record": result["record"]})
+        return jsonify({"success": True, "record": result["record"], "overview": result.get("overview")})
     except (ProviderError, SupabaseError) as error:
         return provider_error_response(as_provider_error(error))
 
@@ -2505,6 +2509,14 @@ def health():
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
     )
+
+
+try:
+    from backend.music_routes import create_music_blueprint
+except ModuleNotFoundError:
+    from music_routes import create_music_blueprint
+
+app.register_blueprint(create_music_blueprint(require_authenticated_user, optional_authenticated_user, enforce_rate_limit, ALLOWED_ORIGINS))
 
 
 if os.path.exists(FRONTEND_BUILD):

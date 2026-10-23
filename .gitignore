@@ -44,3 +44,7 @@ backend/history/
 .vscode/
 .DS_Store
 Thumbs.db
+
+CODEX_CONTINUE.md
+
+docs/checkpoints/

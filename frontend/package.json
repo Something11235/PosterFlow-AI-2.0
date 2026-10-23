@@ -8,7 +8,8 @@
     "build": "vite build",
     "lint": "oxlint",
     "test": "node --test tests/*.test.mjs",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "preview:studio": "node ../scripts/preview-studio.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.116.0",

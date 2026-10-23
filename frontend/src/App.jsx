@@ -23,6 +23,8 @@ import PromptEditor from "./components/PromptEditor";
 import PresetLibrary from "./components/PresetLibrary";
 import ProviderSettings from "./components/ProviderSettings";
 import Sidebar from "./components/Sidebar";
+import StudioNavigation from "./components/studio/StudioNavigation";
+import "./components/studio/studio.css";
 import {
   buildProviderHeaders,
   DEFAULT_PLATFORM_MODEL,
@@ -37,9 +39,11 @@ import { CLIENT_HEADERS, clearImageUrlCache, downloadImage, recoverGeneration } 
 import { createImageArchive } from "./lib/batchDownload";
 import { DEFAULT_PRESET } from "./lib/presets";
 import { cleanupReferencePaths, uploadReferenceFiles } from "./lib/referenceUpload";
+import { appendReferenceFiles, removeReferenceMentions } from "./lib/referenceSelection";
 import { supabase, supabaseConfigured } from "./lib/supabase";
 
 const CanvasWorkspace = lazy(() => import("./components/FabricCanvasWorkspace"));
+const StudioWorkspace = lazy(() => import("./components/studio/StudioWorkspace"));
 
 const API_BASE = "/api";
 
@@ -140,6 +144,8 @@ const MODE_META = {
 };
 
 export default function App() {
+  const [classicWorkspace] = useState(() => new URLSearchParams(window.location.search).get("workspace") === "classic");
+  const [studioArea, setStudioArea] = useState("home");
   const [mode, setMode] = useState("create");
   const [prompt, setPrompt] = useState(DEFAULT_PRESET?.prompt || "");
   const [activePreset, setActivePreset] = useState(DEFAULT_PRESET);
@@ -148,12 +154,15 @@ export default function App() {
   const [customSize, setCustomSize] = useState({ width: "1024", height: "1024" });
   const [count, setCount] = useState(1);
   const [referenceFiles, setReferenceFiles] = useState([]);
-  const [referencePreviews, setReferencePreviews] = useState([]);
+  const referenceFilesRef = useRef([]);
+  const [referenceFeedback, setReferenceFeedback] = useState(null);
 
   const [images, setImages] = useState([]);
   const [currentPrompt, setCurrentPrompt] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [downloadingImages, setDownloadingImages] = useState(new Set());
+  const downloadingImagesRef = useRef(new Set());
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState("");
 
@@ -388,6 +397,7 @@ export default function App() {
       filenames: uniqueFilenames,
     });
     setSelectedImages(new Set());
+    setStudioArea("image");
     setMode("canvas");
     setNotice(`正在送入画布：${uniqueFilenames.length} 张图片`);
   }, []);
@@ -397,13 +407,36 @@ export default function App() {
     setCurrentPrompt(generatedPrompt);
   }, []);
 
-  const handleReferenceChange = useCallback((files) => {
-    const nextFiles = Array.isArray(files) ? files.slice(0, MAX_REFERENCE_IMAGES) : files ? [files] : [];
-    setReferenceFiles(nextFiles);
-    setReferencePreviews([]);
-    Promise.all(nextFiles.map((file) => new Promise((resolve) => {
-      const reader = new FileReader(); reader.onload = (event) => resolve(event.target.result); reader.onerror = () => resolve(""); reader.readAsDataURL(file);
-    }))).then(setReferencePreviews);
+  const handleReferenceAdd = useCallback((files) => {
+    if (!files.length) return;
+    const result = appendReferenceFiles(referenceFilesRef.current, files);
+    referenceFilesRef.current = result.files;
+    setReferenceFiles(result.files);
+    const messages = [];
+    if (result.added) messages.push(`已添加 ${result.added} 张参考图`);
+    if (result.duplicates) messages.push(`已跳过 ${result.duplicates} 张重复图片`);
+    if (result.oversized) messages.push(`${result.oversized} 张超过 16 MB，未添加`);
+    if (result.unsupported) messages.push(`${result.unsupported} 张格式不支持或无法识别，请使用 PNG、JPG、WebP 或 GIF`);
+    if (result.overflow) messages.push(`最多保留 ${MAX_REFERENCE_IMAGES} 张，另外 ${result.overflow} 张未添加`);
+    setReferenceFeedback({ text: messages.join("；"), warning: Boolean(result.oversized || result.unsupported || result.overflow) });
+  }, []);
+
+  const handleReferenceRemove = useCallback((index) => {
+    const current = referenceFilesRef.current;
+    if (!Number.isInteger(index) || index < 0 || index >= current.length) return;
+    const remaining = current.filter((_file, position) => position !== index);
+    referenceFilesRef.current = remaining;
+    setReferenceFiles(remaining);
+    setPrompt(value => removeReferenceMentions(value, index, current.length));
+    setReferenceFeedback({ text: `已删除图${index + 1}，剩余图片已重新编号，相关 @图 引用已同步更新。`, warning: false });
+  }, []);
+
+  const handleReferenceClear = useCallback(() => {
+    const previousCount = referenceFilesRef.current.length;
+    referenceFilesRef.current = [];
+    setReferenceFiles([]);
+    setPrompt(value => removeReferenceMentions(value, null, previousCount));
+    setReferenceFeedback({ text: "已清空全部参考图及对应的 @图 引用。", warning: false });
   }, []);
 
   const handleApplyPreset = useCallback((preset) => {
@@ -634,10 +667,18 @@ export default function App() {
   }, []);
 
   const handleDownloadImage = useCallback(async (filename) => {
+    if (downloadingImagesRef.current.has(filename)) return;
+    downloadingImagesRef.current.add(filename);
+    setDownloadingImages(new Set(downloadingImagesRef.current));
+    setNotice("正在读取原图，请稍候…");
     try {
       await downloadImage(filename, { authenticated: Boolean(session), headers: authHeaders });
+      setNotice("已请求浏览器下载原图");
     } catch (reason) {
       setNotice("下载失败：" + (reason?.message || "请稍后重试"));
+    } finally {
+      downloadingImagesRef.current.delete(filename);
+      setDownloadingImages(new Set(downloadingImagesRef.current));
     }
   }, [authHeaders, session]);
 
@@ -689,19 +730,19 @@ export default function App() {
 
   useEffect(() => {
     const handler = (e) => {
-      if (mode !== "canvas" && (e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      if ((classicWorkspace || studioArea === "image") && mode !== "canvas" && (e.ctrlKey || e.metaKey) && e.key === "Enter") {
         e.preventDefault();
         handleGenerate();
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [handleGenerate, mode]);
+  }, [handleGenerate, mode, classicWorkspace, studioArea]);
 
   return (
-    <div className="min-h-dvh bg-bg-primary text-text-primary subtle-grid lg:h-dvh lg:overflow-hidden">
+    <div className={`min-h-dvh bg-bg-primary text-text-primary lg:h-dvh lg:overflow-hidden ${classicWorkspace ? "subtle-grid" : "studio-app"}`}>
       <div className="flex min-h-dvh flex-col lg:h-dvh lg:flex-row">
-        <Sidebar
+        {classicWorkspace ? <Sidebar
           mode={mode}
           modes={MODE_META}
           onModeChange={setMode}
@@ -717,9 +758,24 @@ export default function App() {
           onOpenRecharge={() => setRechargeOpen(true)}
           onOpenMetrics={() => setMetricsOpen(true)}
           onOpenHistory={() => setHistoryOpen(true)}
-        />
+        /> : <StudioNavigation
+          area={studioArea}
+          onAreaChange={setStudioArea}
+          session={session}
+          account={account}
+          accountLoading={accountLoading}
+          onOpenAuth={() => setAuthOpen(true)}
+          onOpenAccount={() => setAccountOpen(true)}
+          onOpenRecharge={() => setRechargeOpen(true)}
+          onOpenMetrics={() => setMetricsOpen(true)}
+          onOpenHistory={() => setHistoryOpen(true)}
+          onOpenProvider={() => setShowProviderSettings(true)}
+        />}
 
         <main className="flex min-w-0 flex-1 flex-col">
+          <AnnouncementBanner />
+          <div className={`studio-image-workspace ${classicWorkspace || studioArea === "image" ? "" : "studio-is-hidden"}`}>
+          {!classicWorkspace && <div className="studio-image-toolbar"><span>图像工作区 · 沿用现有图片服务</span>{Object.entries(MODE_META).map(([key, item]) => <button type="button" key={key} onClick={() => setMode(key)} aria-pressed={mode === key}><item.icon size={15} />{item.label}</button>)}</div>}
           <header className="border-b border-border-subtle bg-bg-primary/92 px-4 py-3 backdrop-blur lg:px-6">
             <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
               <div className="flex min-w-0 items-center gap-3">
@@ -771,8 +827,6 @@ export default function App() {
             </div>
           </header>
 
-          <AnnouncementBanner />
-
           {mode === "canvas" && (
             <>
               <div className="h-[680px] flex-none lg:h-auto lg:min-h-0 lg:flex-1">
@@ -823,11 +877,14 @@ export default function App() {
                 prompt={prompt}
                 onPromptChange={setPrompt}
                 onGenerate={handleGenerate}
+                onOpenProvider={() => setShowProviderSettings(true)}
                 isGenerating={isGenerating}
                 currentPrompt={currentPrompt}
                 referenceFiles={referenceFiles}
-                onReferenceChange={handleReferenceChange}
-                referencePreviews={referencePreviews}
+                onReferenceAdd={handleReferenceAdd}
+                onReferenceRemove={handleReferenceRemove}
+                onReferenceClear={handleReferenceClear}
+                referenceFeedback={referenceFeedback}
                 mode={mode}
                 onCopyPrompt={handleCopyPrompt}
                 providerConfigured={providerConfigured}
@@ -867,6 +924,7 @@ export default function App() {
                 onDownloadBatch={handleDownloadBatch}
                 onDownloadImage={handleDownloadImage}
                 isExporting={isExporting}
+                downloadingImages={downloadingImages}
                 onAddToCanvas={handleAddToCanvas}
                 onCopyPrompt={handleCopyPrompt}
                 onRetry={handleGenerate}
@@ -878,14 +936,22 @@ export default function App() {
               />
             </section>
           </div>
+          </div>
+          {!classicWorkspace && <div className={`studio-workspace-host ${studioArea === "image" ? "studio-is-hidden" : ""}`}>
+            <Suspense fallback={<div className="flex flex-1 items-center justify-center p-16 text-text-muted">正在打开创作空间…</div>}>
+              <StudioWorkspace key={session?.user?.id || "guest"} area={studioArea} onAreaChange={setStudioArea} username={account?.profile?.username} identity={session?.user?.id || "guest"} authHeaders={authHeaders} session={session} account={account} accountLoading={accountLoading} onLogin={() => setAuthOpen(true)} onAccountRefresh={refreshAccount} onStartImage={text => { if (text?.trim()) { setPrompt(text); setActivePreset(null); setMode("create"); } setStudioArea("image"); }} />
+            </Suspense>
+          </div>}
         </main>
 
       </div>
 
       {previewImage && (
         <ImageModal
+          key={previewImage}
           onDownloadImage={handleDownloadImage}
           filename={previewImage}
+          isDownloading={downloadingImages.has(previewImage)}
           onClose={() => setPreviewImage(null)}
           onModify={mode === "iterative" ? handleModify : null}
           authenticated={Boolean(session)}
@@ -914,7 +980,7 @@ export default function App() {
       <AccountPanel open={accountOpen} account={account} loading={accountLoading} onClose={() => setAccountOpen(false)} onSignOut={handleSignOut} onDelete={handleDeleteAccount} onOpenRecharge={() => { setAccountOpen(false); setRechargeOpen(true); }} />
       <AdminMetricsPanel open={metricsOpen} authHeaders={authHeaders} onClose={() => setMetricsOpen(false)} />
       <RechargePanel open={rechargeOpen} onClose={() => setRechargeOpen(false)} />
-      <PromptHistoryPanel key={session?.user?.id || "guest"} open={historyOpen} userId={session?.user?.id} authHeaders={authHeaders} onClose={() => setHistoryOpen(false)} onUsePrompt={value => { setPrompt(value); setActivePreset(null); setMode("create"); setHistoryOpen(false); setNotice("历史提示词已填入编辑器"); }} />
+      <PromptHistoryPanel key={session?.user?.id || "guest"} open={historyOpen} userId={session?.user?.id} authHeaders={authHeaders} onClose={() => setHistoryOpen(false)} onUsePrompt={value => { setPrompt(value); setActivePreset(null); setMode("create"); setStudioArea("image"); setHistoryOpen(false); setNotice("历史提示词已填入编辑器"); }} />
 
       {(notice || selectedCount > 0) && (
         <div className="fixed bottom-4 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-lg border border-border-default bg-bg-secondary px-4 py-3 text-sm text-text-secondary shadow-2xl">

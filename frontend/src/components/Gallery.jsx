@@ -33,6 +33,7 @@ export default function Gallery({
   onClearSelection,
   onDownloadBatch,
   onDownloadImage,
+  downloadingImages,
   isExporting = false,
   onAddToCanvas,
   onCopyPrompt,
@@ -192,10 +193,13 @@ export default function Gallery({
                       <button
                         type="button"
                         onClick={() => onDownloadImage(img.filename)}
-                        className="flex min-h-10 min-w-10 items-center justify-center rounded-md bg-bg-secondary/90 text-text-secondary transition hover:text-text-primary"
-                        title="下载"
+                        disabled={downloadingImages?.has(img.filename)}
+                        aria-busy={downloadingImages?.has(img.filename) || false}
+                        className="flex min-h-10 min-w-10 items-center justify-center rounded-md bg-bg-secondary/90 text-text-secondary transition hover:text-text-primary disabled:cursor-wait disabled:opacity-65"
+                        title={downloadingImages?.has(img.filename) ? "正在读取原图…" : "下载"}
+                        aria-label={downloadingImages?.has(img.filename) ? "正在读取原图…" : "下载"}
                       >
-                        <Download size={16} />
+                        {downloadingImages?.has(img.filename) ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
                       </button>
                       {onModify && (
                         <button
@@ -341,7 +345,7 @@ function ErrorState({ error, billingMode, onRetry }) {
         }
       : error;
   const platform = (errorInfo?.billing_mode || billingMode) === "platform";
-  const recovery = platform ? ["稍后重试", "联系站主核对本次请求"] : errorInfo?.recovery?.length
+  const recovery = platform ? ["请修改提示词或更换参考图重试"] : errorInfo?.recovery?.length
     ? errorInfo.recovery
     : ["检查 API Key", "确认后端进程", "重新发起生成"];
   const upstream = platform ? errorInfo?.upstream_error : null;
