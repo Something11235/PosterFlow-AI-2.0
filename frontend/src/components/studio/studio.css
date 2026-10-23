@@ -4,7 +4,7 @@
 .studio-nav { position: relative; display: flex; flex: 0 0 232px; flex-direction: column; width: 232px; padding: 32px 19px 18px; border-right: 1px solid #1b2738; background: #0f1623; color: var(--studio-text); }
 .studio-brand { display: flex; gap: 10px; align-items: center; margin: 0 6px 43px; }
 .studio-brand-mark { display: grid; width: 39px; height: 39px; place-items: center; background: var(--studio-accent); color: #151f2e; border-radius: 12px 3px 12px 3px; }
-.studio-brand strong { display: block; font-size: 20px; font-weight: 550; letter-spacing: -.8px; }
+.studio-brand strong { display: block; font-size: 19px; font-weight: 550; letter-spacing: -.8px; }
 .studio-brand strong > span { margin-left: 3px; font-size: 10px; vertical-align: super; }
 .studio-brand small { font-size: 8px; letter-spacing: 2px; color: #8796aa; }
 .studio-nav-caption { display: flex; justify-content: space-between; margin: 0 12px 12px; color: #8796aa; font-size: 10px; letter-spacing: .6px; }
@@ -21,7 +21,7 @@
 .studio-nav-bottom { margin-top: auto; padding-top: 35px; }
 .studio-credit-card { border: 1px solid #243142; border-radius: 8px; padding: 15px; margin-bottom: 18px; background: linear-gradient(120deg, #1b2738, #0f1623); }
 .studio-credit-card > span { display: flex; justify-content: space-between; font-size: 11px; color: #cbd5e1; }
-.studio-credit-card > strong { display: block; margin: 9px 0 16px; font-size: 22px; font-weight: 500; letter-spacing: -.5px; }
+.studio-credit-card > strong { display: block; margin: 9px 0 16px; font-size: 20px; font-weight: 500; letter-spacing: -.5px; }
 .studio-credit-card > button { display: flex; justify-content: space-between; width: 100%; align-items: center; padding-top: 10px; border: 0; border-top: 1px solid #243142; font-size: 11px; color: #e2e8f0; background: transparent; }
 .studio-config-link, .studio-admin-link { display: flex; gap: 10px; align-items: center; min-height: 42px; width: 100%; padding: 8px 9px; border: 0; background: transparent; color: #8796aa; font-size: 12px; text-align: left; }
 .studio-admin-link > svg:last-child { margin-left: auto; }
@@ -307,15 +307,18 @@
 .studio-preview-art > span { top: 12px; bottom: auto; }
 .studio-nav { overflow-y: auto; scrollbar-width: thin; }
 .studio-primary-nav, .studio-secondary-nav { flex-shrink: 0; }
-.studio-nav-caption { font-size: 13px; }
-.studio-nav-caption span { font-size: 12px; }
-.studio-primary-nav > button, .studio-secondary-nav > button, .studio-prompt-library > summary { min-height: 50px; font-size: 16px; }
-.studio-primary-nav small { font-size: 11px; }
-.studio-prompt-library a { font-size: 14px; }
-.studio-credit-card > span, .studio-credit-card > button { font-size: 13px; }
-.studio-admin-link, .studio-account-link > span:nth-child(2) { font-size: 14px; }
-.studio-account-link small { font-size: 12px; }
-.studio-source-link { font-size: 11px; }
+.studio-nav-caption { font-size: 12px; }
+.studio-nav-caption span { font-size: 11px; }
+.studio-primary-nav > button, .studio-secondary-nav > button, .studio-prompt-library > summary { min-height: 50px; font-size: 14px; }
+.studio-primary-nav > button { gap: 10px; padding-right: 11px; padding-left: 11px; }
+.studio-primary-nav > button > span:first-of-type { white-space: nowrap; }
+.studio-primary-nav > button > svg, .studio-primary-nav small { flex-shrink: 0; }
+.studio-primary-nav small { font-size: 10px; white-space: nowrap; }
+.studio-prompt-library a { font-size: 13px; }
+.studio-credit-card > span, .studio-credit-card > button { font-size: 12px; }
+.studio-admin-link, .studio-account-link > span:nth-child(2) { font-size: 13px; }
+.studio-account-link small { font-size: 11px; }
+.studio-source-link { font-size: 10px; }
 .studio-breadcrumb, .studio-topbar strong { font-size: 14px; }
 .studio-local-badge { font-size: 12px; }
 .studio-top-drafts { min-height: 44px; font-size: 13px; }

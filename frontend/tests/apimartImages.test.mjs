@@ -1,0 +1,57 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { imageGenerationFetch, readImageTask } from "../src/lib/apimartImages.js";
+
+const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+const requestId = "11111111-1111-4111-8111-111111111111";
+function install(t, fetch) {
+  const oldFetch = global.fetch, oldWindow = global.window;
+  global.fetch = fetch;
+  global.window = new EventTarget();
+  t.after(() => { global.fetch = oldFetch; global.window = oldWindow; });
+}
+test("existing image models retain their original endpoint and body", async t => {
+  const init = { method: "POST", headers: { "X-Billing-Mode": "platform" }, body: JSON.stringify({ platform_model: "gpt-image-2", request_id: requestId, prompt: "猫" }) };
+  let called;
+  install(t, async (...args) => { called = args; return json({ images: [] }); });
+  await imageGenerationFetch("/api/modify", init);
+  assert.deepEqual(called, ["/api/modify", init]);
+});
+test("new models submit once then query until actual saved images are returned", async t => {
+  const calls = [];
+  install(t, async (url, init) => {
+    calls.push({ url, method: init?.method || "GET" });
+    if (calls.length === 1) return json({ job: { status: "submitted" } }, 202);
+    if (calls.length === 2) return json({ job: { status: "processing" } });
+    return json({ job: { status: "completed" }, images: [{ filename: "stored.png" }], credit_balance: 9 });
+  });
+  const response = await imageGenerationFetch("/api/generate", { method: "POST", headers: { "X-Billing-Mode": "platform" }, body: JSON.stringify({ platform_model: "nano-banana-pro", request_id: requestId, prompt: "猫" }) }, { pollInterval: 0 });
+  assert.equal((await response.json()).images[0].filename, "stored.png");
+  assert.equal(calls.filter(call => call.method === "POST").length, 1);
+  assert.equal(calls[0].url, "/api/apimart-images/generations");
+  assert.ok(calls.slice(1).every(call => call.url.endsWith(requestId)));
+});
+test("uncertain submit and query failure never trigger another paid POST", async t => {
+  let count = 0;
+  install(t, async () => { count++; return json({ error: "提交结果待确认", code: "UNCERTAIN" }, 503); });
+  const init = { method: "POST", headers: { "X-Provider-Model": "grok-imagine-2.0-ext" }, body: JSON.stringify({ request_id: requestId, prompt: "猫" }) };
+  const response = await imageGenerationFetch("/api/generate", init);
+  assert.equal(response.status, 503);
+  assert.equal(count, 1);
+});
+test("long running tasks remain resumable rather than being regenerated", async t => {
+  let count = 0;
+  install(t, async () => { count++; return json({ job: { status: "processing" } }, 202); });
+  const response = await imageGenerationFetch("/api/generate", { method: "POST", headers: { "X-Billing-Mode": "platform" }, body: JSON.stringify({ platform_model: "nano-banana-pro", request_id: requestId, prompt: "猫" }) }, { maxWait: 0 });
+  assert.equal((await response.json()).code, "IMAGE_TASK_PENDING");
+  assert.equal(count, 1);
+});
+test("manual task recovery uses GET without resubmitting generation", async t => {
+  install(t, async (url, init) => {
+    assert.equal(url, "/api/apimart-images/tasks/" + requestId);
+    assert.equal(init.method, undefined);
+    assert.equal(init.cache, "no-store");
+    return json({ job: { status: "completed" }, images: [{ filename: "recovered.png" }] });
+  });
+  assert.equal((await readImageTask(requestId, {})).images[0].filename, "recovered.png");
+});

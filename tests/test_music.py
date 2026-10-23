@@ -138,6 +138,45 @@ class MusicProtocolTests(unittest.TestCase):
             response.close()
             pool.close.assert_called_once()
 
+    def test_apimart_own_key_generation_uses_standard_transport_once(self):
+        payload = {"code": 200, "data": [{"task_id": TASK_ID}]}
+        endpoint = "https://api.apimart.ai/v1/music/generations"
+        with patch.object(provider.requests, "request", return_value=self.response(200, payload)) as standard, patch.object(provider, "pinned_custom_response") as pinned:
+            self.assertEqual(provider.submit_music("test-secret", {"model": "suno"}, endpoint), TASK_ID)
+        pinned.assert_not_called()
+        standard.assert_called_once()
+        self.assertEqual(standard.call_args.args[:2], ("POST", endpoint))
+        self.assertFalse(standard.call_args.kwargs["allow_redirects"])
+        self.assertEqual(standard.call_args.kwargs["headers"]["Authorization"], "Bearer test-secret")
+
+    def test_apimart_own_key_queries_use_the_same_standard_transport(self):
+        endpoint = "https://api.apimart.ai/v1/music/tasks/{task_id}"
+        payload = {"code": 200, "data": {"id": TASK_ID, "status": "processing"}}
+        with patch.object(provider.requests, "request", return_value=self.response(200, payload)) as standard, patch.object(provider, "pinned_custom_response") as pinned:
+            self.assertEqual(provider.query_music("test-secret", TASK_ID, endpoint)["status"], "processing")
+        pinned.assert_not_called()
+        self.assertEqual(standard.call_args.args[1], endpoint.replace("{task_id}", TASK_ID))
+
+    def test_lookalike_hosts_and_unrecognized_paths_cannot_use_trusted_transport(self):
+        for endpoint in ("https://api.apimart.ai.evil.invalid/v1/music/generations", "https://api.apimart.ai/private/path", "https://api.apimart.ai/v1/music/generations?token=value", "https://user:pass@api.apimart.ai/v1/music/generations", "https://api.apimart.ai/v1/music/tasks/../generations"):
+            with self.subTest(endpoint=endpoint):
+                self.assertIsNone(provider.trusted_apimart_url("POST", endpoint))
+        endpoint = "https://music.example.invalid/v1/music/generations"
+        with patch.object(provider, "pinned_custom_response", return_value=self.response(200, {"code": 200, "data": [{"task_id": TASK_ID}]})) as pinned, patch.object(provider.requests, "request") as standard:
+            provider.submit_music("test-secret", {"model": "suno"}, endpoint)
+        pinned.assert_called_once()
+        standard.assert_not_called()
+
+    def test_transport_failure_logs_only_types_and_never_replays_submission(self):
+        secret = "secret-that-must-not-appear"
+        with patch.object(provider.requests, "request", side_effect=requests.ConnectTimeout(secret)) as standard, self.assertLogs(provider.logger, level="WARNING") as logs:
+            with self.assertRaises(provider.MusicError) as caught:
+                provider.submit_music(secret, {"model": "suno"}, "https://api.apimart.ai/v1/music/generations")
+        standard.assert_called_once()
+        self.assertTrue(caught.exception.uncertain)
+        self.assertNotIn(secret, " ".join(logs.output))
+        self.assertIn("ConnectTimeout", " ".join(logs.output))
+
 
 class MusicRouteTests(unittest.TestCase):
     def setUp(self):

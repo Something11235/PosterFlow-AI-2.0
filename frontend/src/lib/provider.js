@@ -1,10 +1,19 @@
 export const PROVIDER_STORAGE_KEY = "posterflow.provider.session.v1";
 export const MAX_REFERENCE_IMAGES = 8;
 
+export const APIMART_IMAGE_MODELS = [
+  { value: "gemini-nano-banana-2.1", label: "Nano Banana 2.1", creditCost: 1, maxCount: 4, maxReferences: 8, resolutions: ["1K", "2K", "4K"] },
+  { value: "nano-banana-pro", label: "Nano Banana Pro", creditCost: 1, maxCount: 1, maxReferences: 8, resolutions: ["1K", "2K", "4K"] },
+  { value: "grok-imagine-image-2.0", label: "grok-imagine-image-2.0", creditCost: 1, maxCount: 4, maxReferences: 3, resolutions: ["1K", "2K"] },
+  { value: "grok-imagine-2.0-ext", label: "grok-imagine-2.0-ext", creditCost: 1, maxCount: 4, maxReferences: 0, resolutions: ["quality"] },
+];
+export const apimartImageModel = model => APIMART_IMAGE_MODELS.find(item => item.value === model);
+
 export const IMAGE_MODEL_OPTIONS = [
   { value: "gpt-image-2.5-flare", label: "gpt-image-2.5-flare", creditCost: 1 },
   { value: "gpt-image-2.5-sunburst", label: "gpt-image-2.5-sunburst", creditCost: 1 },
   { value: "gpt-image-2", label: "gpt-image-2", creditCost: 1 },
+  ...APIMART_IMAGE_MODELS,
 ];
 
 export const DEFAULT_PLATFORM_MODEL = IMAGE_MODEL_OPTIONS[0].value;

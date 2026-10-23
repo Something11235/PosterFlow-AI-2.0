@@ -29,6 +29,7 @@ export default function MusicWorkspace({ active, identity, authHeaders, session,
   const [selected, setSelected] = useState("");
   const [result, setResult] = useState(null);
   const [message, setMessage] = useState("");
+  const [submissionError, setSubmissionError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [querying, setQuerying] = useState(false);
   const [downloading, setDownloading] = useState("");
@@ -52,7 +53,7 @@ export default function MusicWorkspace({ active, identity, authHeaders, session,
   }, [active]);
 
   useEffect(() => {
-    setJobs([]); setSelected(""); setResult(null); setMessage("");
+    setJobs([]); setSelected(""); setResult(null); setMessage(""); setSubmissionError(null);
     return () => { pending.current?.abort(); queryingRef.current?.abort(); };
   }, [options]);
 
@@ -137,7 +138,7 @@ export default function MusicWorkspace({ active, identity, authHeaders, session,
     if (mode === "own_key" && !key) { setMessage("请先保存 API Key。"); return; }
     const requestId = crypto.randomUUID(), controller = new AbortController();
     pending.current = controller;
-    setBusy(true); setMessage(""); setResult(null); setSelected(requestId);
+    setBusy(true); setMessage(""); setSubmissionError(null); setResult(null); setSelected(requestId);
     saveMusicSession(identity, `selected.${mode}`, requestId);
     const placeholder = { request_id: requestId, billing_mode: mode, model: values.model, version: isCustom ? values.custom_version : values.version, status: "submitting", created_at: new Date().toISOString() };
     setJobs(previous => mergeJobs(previous, [placeholder]));
@@ -149,7 +150,7 @@ export default function MusicWorkspace({ active, identity, authHeaders, session,
     } catch (error) {
       if (controller.signal.aborted) return;
       setJobs(previous => mergeJobs(previous, [{ ...placeholder, status: "submission_unknown" }]));
-      setMessage(error.name === "AbortError" ? "提交等待超时，请查询当前任务，勿重复生成。" : error.message);
+      setSubmissionError({ requestId, message: error.name === "AbortError" ? "提交等待超时，请保留当前请求编号，勿重复生成。" : error.message });
       // A GET recovers an accepted intent; never replay the paid POST.
       await refresh(requestId);
     } finally {
@@ -211,7 +212,8 @@ export default function MusicWorkspace({ active, identity, authHeaders, session,
       {jobs.length > 0 && <div className="music-task-tabs" aria-label="选择音乐任务">{jobs.map(job => <button type="button" key={job.request_id} aria-pressed={job.request_id === selected} onClick={() => selectTask(job)}><strong>{job.model === "flowmusic" ? "Flow Music" : "Suno"} · {job.version}</strong><span>{STATUS[job.status] || "状态待确认"}</span><small>{new Date(job.created_at).toLocaleString("zh-CN", { hour12: false })}</small></button>)}</div>}
       {current ? <div className="music-task-detail"><div className="music-task-status"><span>{STATUS[current.status] || "状态待确认"}</span><button type="button" className="studio-secondary" disabled={querying || busy} onClick={() => refresh(selected)}><RefreshCw className={querying ? "music-spin" : ""} size={15} />{querying ? "查询中…" : "刷新状态"}</button></div><p className="music-task-id">请求编号：{current.request_id}</p>{current.provider_task_id && <p className="music-task-id">服务商任务：{current.provider_task_id}</p>}
         {musicShouldPoll(current) && <><p className="music-waiting">正在等待音乐服务返回结果，完成后会在这里展示。</p>{result?.requestId === selected && <progress aria-label="音乐生成进度" max="100" value={result.progress || 0} />}</>}
-        {["submitting", "submission_unknown", "unknown"].includes(current.status) && <p className="music-config-note">保留当前请求编号并刷新查询；查询不会重复生成。提交结果仍无法确认时，请联系站长核对服务商任务日志。</p>}
+        {submissionError?.requestId === selected && <p role="alert" className="studio-form-message">{submissionError.message}</p>}
+        {["submitting", "submission_unknown", "unknown"].includes(current.status) && <p className="music-config-note">{current.provider_task_id ? "保留当前请求编号并刷新查询；查询不会重复生成。" : "尚未取得服务商任务编号，刷新只会核对本站记录。请先在服务商后台核对这次请求是否受理，再决定是否重新生成。"}</p>}
         {current.billing_status === "awaiting_balance" && <p role="status" className="music-config-note">已生成 {current.generated_count} 首，共需 {current.generated_count * 2} 积分，已预留 {current.reserved_credits} 积分。请补足余额后刷新状态领取。</p>}
         {current.status === "failed" && <p role="status" className="music-config-note">本次音乐生成失败。{current.billing_status === "refunded" ? "预留的网站积分已退回。" : "网站未扣积分，请在服务商后台核对上游记录。"}</p>}
         {current.billing_status === "settled" && <p className="music-settled"><Check size={15} />{current.generated_count} 首 · 已扣 {current.charged_credits} 积分</p>}

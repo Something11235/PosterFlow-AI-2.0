@@ -10,6 +10,8 @@ import {
   WandSparkles,
 } from "lucide-react";
 import Gallery from "./components/Gallery";
+import ApimartImageTasks from "./components/ApimartImageTasks";
+import { imageGenerationFetch } from "./lib/apimartImages";
 import ImageModal from "./components/ImageModal";
 import AuthModal from "./components/AuthModal";
 import AccountPanel from "./components/AccountPanel";
@@ -27,6 +29,7 @@ import StudioNavigation from "./components/studio/StudioNavigation";
 import "./components/studio/studio.css";
 import {
   buildProviderHeaders,
+  apimartImageModel,
   DEFAULT_PLATFORM_MODEL,
   clearProviderConfig,
   getProviderDisplayName,
@@ -151,6 +154,8 @@ export default function App() {
   const [activePreset, setActivePreset] = useState(DEFAULT_PRESET);
   const [size, setSize] = useState("");
   const [platformModel, setPlatformModel] = useState(DEFAULT_PLATFORM_MODEL);
+  const [imageResolution, setImageResolution] = useState("1K");
+  const [apimartConfigured, setApimartConfigured] = useState(false);
   const [customSize, setCustomSize] = useState({ width: "1024", height: "1024" });
   const [count, setCount] = useState(1);
   const [referenceFiles, setReferenceFiles] = useState([]);
@@ -319,8 +324,21 @@ export default function App() {
   const sizeInfo = stylesData.sizes?.[size];
   const selectedCount = selectedImages.size;
   const hasBrowserProvider = isProviderConfigComplete(providerConfig);
-  const platformReady = Boolean(serverProvider.platformConfigured && session);
+  const activeImageModel = billingMode === "platform" ? platformModel : providerConfig.model;
+  const apimartSpec = apimartImageModel(activeImageModel);
+  const platformReady = Boolean((apimartSpec ? apimartConfigured : serverProvider.platformConfigured) && session);
   const providerConfigured = billingMode === "platform" ? platformReady : hasBrowserProvider;
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/apimart-images/config", { headers: CLIENT_HEADERS, signal: controller.signal })
+      .then(response => response.json()).then(data => { if (!controller.signal.aborted) setApimartConfigured(Boolean(data.platform_configured)); }).catch(() => {});
+    return () => controller.abort();
+  }, []);
+  useEffect(() => {
+    if (!apimartSpec) return;
+    setCount(previous => Math.min(previous, apimartSpec.maxCount));
+    setImageResolution(previous => apimartSpec.resolutions.includes(previous) ? previous : apimartSpec.resolutions[0]);
+  }, [apimartSpec]);
   // 平台积分模式不向用户暴露实际中转站/服务商域名；自带 Key 模式仍显示用户自己的配置。
   const providerName = billingMode === "platform" ? "平台图片服务" : getProviderDisplayName(providerConfig, serverProvider.host);
   const visibleServerProviderHost = billingMode === "platform" ? "平台图片服务" : "服务器图片服务";
@@ -463,6 +481,7 @@ export default function App() {
     }
     const previousImages = images;
     const requestId = createRequestId();
+    const imageRequestOwner = session?.user?.id || "guest";
     setError(null);
     setNotice("");
     setIsGenerating(true);
@@ -500,12 +519,14 @@ export default function App() {
 
       generationRequestStarted = true;
       if (!session?.user?.id) rememberGuestPrompt(body.prompt, requestId);
-      const res = await fetch(`${API_BASE}/${redrawFromPrevious ? "modify" : "generate"}`, {
+      if (apimartSpec) body.resolution = imageResolution;
+      const res = await imageGenerationFetch(`${API_BASE}/${redrawFromPrevious ? "modify" : "generate"}`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Request-Id": requestId, ...providerHeaders },
         body: JSON.stringify(body),
       });
       const data = await res.json();
+      if (apimartSpec && imageRequestOwner !== (sessionRef.current?.user?.id || "guest")) return;
       if (!res.ok || data.error) {
         const nextError = normalizeApiError(data);
         setError({ ...nextError, billing_mode: billingMode });
@@ -547,6 +568,8 @@ export default function App() {
     }
   }, [
     count,
+    apimartSpec,
+    imageResolution,
     session?.user?.id,
     customSize.height,
     customSize.width,
@@ -571,6 +594,7 @@ export default function App() {
       if (!modifyPrompt.trim()) return;
       if (!requireGenerationAccess()) return;
       const requestId = createRequestId();
+      const imageRequestOwner = session?.user?.id || "guest";
       setError(null);
       setIsGenerating(true);
       let generationRequestStarted = false;
@@ -578,7 +602,7 @@ export default function App() {
       try {
         generationRequestStarted = true;
         if (!session?.user?.id) rememberGuestPrompt(modifyPrompt.trim(), requestId);
-        const res = await fetch(`${API_BASE}/modify`, {
+        const res = await imageGenerationFetch(`${API_BASE}/modify`, {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Request-Id": requestId, ...providerHeaders },
           body: JSON.stringify({
@@ -587,11 +611,13 @@ export default function App() {
             ...(size ? { size } : {}),
             ...(size === "custom" ? { custom_width: customSize.width, custom_height: customSize.height } : {}),
             quality: "auto",
+            ...(apimartSpec ? { resolution: imageResolution } : {}),
             ...(billingMode === "platform" ? { platform_model: platformModel } : {}),
             request_id: requestId,
           }),
         });
         const data = await res.json();
+        if (apimartSpec && imageRequestOwner !== (sessionRef.current?.user?.id || "guest")) return;
         if (!res.ok || data.error) {
           const nextError = normalizeApiError(data, {
             message: "迭代失败",
@@ -632,7 +658,7 @@ export default function App() {
         setIsGenerating(false);
       }
     },
-    [authHeaders, billingMode, customSize.height, customSize.width, platformModel, providerHeaders, refreshAccount, requireGenerationAccess, session?.user?.id, size, updateCreditBalance],
+    [apimartSpec, imageResolution, authHeaders, billingMode, customSize.height, customSize.width, platformModel, providerHeaders, refreshAccount, requireGenerationAccess, session?.user?.id, size, updateCreditBalance],
   );
 
   const handleSaveProvider = useCallback((nextConfig) => {
@@ -852,6 +878,7 @@ export default function App() {
                   referenceUploadHeaders={referenceUploadHeaders}
                   billingMode={billingMode}
                   platformModel={platformModel}
+                  imageResolution={imageResolution}
                   authenticated={Boolean(session)}
                   onAuthRequired={() => { setAuthOpen(true); setNotice("请先登录，验证邮箱后即可使用免费积分"); }}
                   onAccountRefresh={refreshAccount}
@@ -895,6 +922,9 @@ export default function App() {
                 hasPreviousImage={images.length > 0}
               />
               <ParameterPanel
+                apimartSpec={apimartSpec}
+                resolution={imageResolution}
+                onResolutionChange={setImageResolution}
                 size={size}
                 onSizeChange={setSize}
                 customSize={customSize}
@@ -907,6 +937,8 @@ export default function App() {
             </section>
 
             <section className="min-h-[620px] min-w-0 lg:min-h-0">
+              <ApimartImageTasks key={`${session?.user?.id || "guest"}:${billingMode}`} headers={providerHeaders} enabled={Boolean(apimartSpec && providerConfigured)}
+                onResult={result => { setImages(result); setSelectedImages(new Set()); setCurrentPrompt(""); setNotice("已读取原任务结果，不重复生图"); }} onRefreshAccount={refreshAccount} />
               <Gallery
                 billingMode={billingMode}
                 images={images}

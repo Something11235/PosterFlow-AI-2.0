@@ -1,0 +1,226 @@
+"""Short image submit/query requests; task state survives browser/function exit."""
+import hashlib
+import hmac
+import json
+import os
+import uuid
+from datetime import datetime
+
+from flask import Blueprint, jsonify, request
+
+try:
+    from backend import apimart_image_provider as provider
+    from backend.supabase_service import SupabaseGateway, SupabaseError, is_supabase_configured
+except ModuleNotFoundError:
+    import apimart_image_provider as provider
+    from supabase_service import SupabaseGateway, SupabaseError, is_supabase_configured
+
+PUBLIC_FIELDS = ("request_id", "model", "billing_mode", "status", "requested_count", "image_keys", "error_code", "created_at")
+
+
+def public_job(job):
+    return {name: job.get(name) for name in PUBLIC_FIELDS}
+
+
+class ImageStore:
+    def __init__(self):
+        self.gateway = SupabaseGateway()
+
+    def rpc(self, name, values):
+        result = self.gateway.rpc(name, values)
+        if not isinstance(result, dict) or not result.get("ok"):
+            code = result.get("code", "IMAGE_DATABASE_UNAVAILABLE") if isinstance(result, dict) else "IMAGE_DATABASE_UNAVAILABLE"
+            messages = {"IMAGE_TASK_NOT_FOUND": "未找到本人的图片任务。", "IMAGE_REQUEST_CONFLICT": "请求编号对应的参数不同，请查询原任务。", "EMAIL_UNVERIFIED": "请先完成邮箱验证。", "CREDITS_INSUFFICIENT": "积分不足，每张图片需要 1 积分。", "ACCOUNT_FROZEN": "当前账户不可用。"}
+            raise provider.ImageTaskError(code, messages.get(code, "图片任务暂时无法处理，请保留请求编号。"), 404 if code == "IMAGE_TASK_NOT_FOUND" else 409)
+        return result
+
+    def begin(self, owner, user, request_id, mode, model, body, prompt):
+        fingerprint = hashlib.sha256(json.dumps(body, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+        return self.rpc("begin_apimart_image_job", {"p_owner": owner, "p_user": user, "p_request": request_id, "p_mode": mode, "p_model": model, "p_count": body["n"], "p_fingerprint": fingerprint, "p_prompt": prompt})
+
+    def apply(self, owner, request_id, event, **kwargs):
+        return self.rpc("apply_apimart_image_job", {"p_owner": owner, "p_request": request_id, "p_event": event, **kwargs})
+
+    def jobs(self, owner, request_id=None):
+        params = {"owner_scope": "eq." + owner, "select": "*", "order": "created_at.desc", "limit": "50"}
+        if request_id:
+            params["request_id"] = "eq." + request_id
+        return self.gateway._request("GET", "/rest/v1/apimart_image_jobs", params=params) or []
+
+
+def create_image_blueprint(server):
+    bp = Blueprint("apimart_images", __name__, url_prefix="/api/apimart-images")
+
+    @bp.after_request
+    def private_response(response):
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    @bp.errorhandler(provider.ImageTaskError)
+    def image_error(error):
+        return jsonify(error=error.message, code=error.code, detail=error.message, submission_unknown=error.uncertain, recovery=["查询原任务", "请勿重复生成"]), error.status
+
+    @bp.errorhandler(SupabaseError)
+    def database_error(_error):
+        return jsonify(error="图片任务数据库尚未就绪，请检查配置和迁移。", code="IMAGE_DATABASE_UNAVAILABLE"), 503
+
+    @bp.errorhandler(Exception)
+    def other_error(error):
+        if isinstance(error, server.ProviderError):
+            return server.provider_error_response(error)
+        # Never log raw provider errors, URLs, request bodies or credentials.
+        return jsonify(error="图片任务暂未完成，请保留任务记录后查询。", code="IMAGE_TASK_UNAVAILABLE"), 503
+
+    def context():
+        mode = server.parse_billing_mode({})
+        if mode == "platform":
+            if any(request.headers.get(name, "").strip() for name in ("X-Provider-Api-Key", "X-Provider-Endpoint", "X-Provider-Model", "X-Provider-Auth-Type")):
+                raise provider.ImageTaskError("PLATFORM_PROVIDER_OVERRIDE_BLOCKED", "平台模式不能混用个人服务配置。")
+            user = server.require_authenticated_user()
+            key = os.getenv("APIMART_IMAGE_API_KEY", "").strip()
+            if not key:
+                raise provider.ImageTaskError("APIMART_IMAGE_NOT_CONFIGURED", "APIMart 图片服务尚未配置，可使用原有模型。", 503)
+            return mode, key, "user-" + user.id, user.id
+        key = request.headers.get("X-Provider-Api-Key", "").strip()
+        endpoint = request.headers.get("X-Provider-Endpoint", "").strip().rstrip("/")
+        if endpoint != provider.BASE + "/images/generations" or request.headers.get("X-Provider-Auth-Type", "bearer") != "bearer":
+            raise provider.ImageTaskError("APIMART_ENDPOINT_INVALID", "新增模型使用 APIMart 的完整图片生成地址和 Bearer 鉴权。")
+        if not key or len(key) > 4096 or any(ord(char) < 33 or ord(char) > 126 for char in key):
+            raise provider.ImageTaskError("PROVIDER_KEY_MISSING", "请填写有效的 APIMart API Key。")
+        user = server.set_optional_storage_scope()
+        identity = "user-" + user.id if user else "guest-" + server.current_client_id()
+        owner = identity + "-" + hashlib.sha256(key.encode()).hexdigest()
+        return mode, key, owner, user.id if user else None
+
+    def normalize_id(value):
+        try:
+            return str(uuid.UUID(str(value)))
+        except (TypeError, ValueError, AttributeError):
+            raise provider.ImageTaskError("INVALID_IMAGE_TASK", "图片任务编号无效。") from None
+
+    def result(job, balance=None, **extra):
+        return {"success": True, "job": public_job(job), "images": [{"filename": name, "index": i + 1} for i, name in enumerate(job.get("image_keys") or [])], "credit_balance": balance, **extra}
+
+    def reconcile(store, owner, key, job):
+        request_id = job["request_id"]
+        if job["status"] in ("completed", "failed") or not job.get("provider_task_id"):
+            return result(job)
+        remote = provider.query(key, job["provider_task_id"])
+        if remote["status"] in ("failed", "cancelled"):
+            applied = store.apply(owner, request_id, "failed", p_error="APIMART_TASK_FAILED")
+            return result(applied["job"], applied.get("balance"))
+        if remote["status"] != "completed":
+            applied = store.apply(owner, request_id, "unknown" if remote["status"] == "unknown" else "processing")
+            return result(applied["job"], applied.get("balance"))
+        urls = remote["urls"]
+        if not urls or len(urls) > job["requested_count"]:
+            raise provider.ImageTaskError("APIMART_RESULT_UNCERTAIN", "上游已完成，结果数量暂未确认；请查询原任务。", 503)
+        token = str(uuid.uuid4())
+        claim = store.apply(owner, request_id, "claim", p_token=token)
+        if not claim.get("claimed"):
+            return result(claim["job"], claim.get("balance"))
+        names = []
+        try:
+            prefix = datetime.fromisoformat(job["created_at"].replace("Z", "+00:00")).strftime("%Y%m%d_%H%M%S")
+            for i, url in enumerate(urls):
+                data = provider.download_image(url)
+                name = f"{prefix}_{job['id'].replace('-', '')[:12]}_{i + 1}.png"
+                server.store_generated_image(name, data)
+                names.append(name)
+            applied = store.apply(owner, request_id, "completed", p_images=names, p_token=token)
+            return result(applied["job"], applied.get("balance"))
+        except Exception:
+            # Deterministic private filenames make a retry safe; no re-generation.
+            # Do not refund an accepted task due to a transient download/save error.
+            try:
+                store.apply(owner, request_id, "retry", p_token=token, p_error="IMAGE_SAVE_PENDING")
+            except (provider.ImageTaskError, SupabaseError):
+                pass
+            raise
+
+    @bp.get("/config")
+    def config():
+        return jsonify(success=True, platform_configured=bool(os.getenv("APIMART_IMAGE_API_KEY", "").strip()) and is_supabase_configured(), database_configured=is_supabase_configured(), models=[{"model": name, "credit_cost": 1, **spec} for name, spec in provider.MODELS.items()])
+
+    @bp.post("/generations")
+    def generate():
+        origin = request.headers.get("Origin")
+        if origin and origin.rstrip("/") not in {request.host_url.rstrip("/"), *server.ALLOWED_ORIGINS}:
+            raise provider.ImageTaskError("ORIGIN_FORBIDDEN", "请求来源不受支持。", 403)
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            raise provider.ImageTaskError("INVALID_IMAGE_TASK", "图片请求格式无效。")
+        mode, key, owner, user_id = context()
+        model = data.get("platform_model") if mode == "platform" else request.headers.get("X-Provider-Model", "").strip()
+        request_id = normalize_id(data.get("request_id"))
+        server.enforce_rate_limit("apimart-image-submit", owner, 8, 60)
+        paths = server.validate_reference_storage_paths(data.get("reference_storage_paths"))
+        try:
+            references = [server.stored_reference_to_base64(path) for path in paths] if paths else server.validate_reference_images_b64(data.get("reference_images_b64"))
+            if not references:
+                single = server.validate_reference_image_b64(data.get("reference_b64"))
+                if single:
+                    references = [single]
+            if not references and data.get("previous_image"):
+                previous = server.stored_image_to_base64(os.path.basename(str(data["previous_image"])))
+                if not previous:
+                    raise provider.ImageTaskError("PREVIOUS_IMAGE_MISSING", "原图已过期或暂时无法读取，请更换参考图。")
+                references = [server.validate_reference_image_b64(previous)]
+            body = provider.build_request(model, data, references)
+            store = ImageStore()
+            begun = store.begin(owner, user_id, request_id, mode, model, body, str(data.get("prompt", "")).strip())
+            if begun.get("existing"):
+                return jsonify(result(begun["job"], begun.get("balance"), idempotent=True)), 200
+            try:
+                if references:
+                    body["image_urls"] = [provider.upload_reference(key, ref) for ref in references]
+            except provider.ImageTaskError as error:
+                store.apply(owner, request_id, "failed", p_error=error.code)
+                raise
+            try:
+                task = provider.submit(key, body, begun["job"]["id"])
+            except provider.ImageTaskError as error:
+                store.apply(owner, request_id, "submission_unknown" if error.uncertain else "failed", p_error=error.code)
+                raise
+            applied = store.apply(owner, request_id, "submitted", p_task=task)
+            return jsonify(result(applied["job"], applied.get("balance"))), 202
+        finally:
+            server.cleanup_reference_storage_paths(paths)
+
+    @bp.get("/tasks")
+    def tasks():
+        _mode, _key, owner, _user = context()
+        return jsonify(success=True, jobs=[public_job(job) for job in ImageStore().jobs(owner)])
+
+    @bp.get("/tasks/<request_id>")
+    def task(request_id):
+        _mode, key, owner, _user = context()
+        server.enforce_rate_limit("apimart-image-query", owner, 120, 60)
+        rows = ImageStore().jobs(owner, normalize_id(request_id))
+        if not rows:
+            raise provider.ImageTaskError("IMAGE_TASK_NOT_FOUND", "未找到本人的图片任务。", 404)
+        return jsonify(reconcile(ImageStore(), owner, key, rows[0]))
+
+    @bp.post("/reconcile")
+    def scheduled_reconcile():
+        secret = os.getenv("APIMART_IMAGE_RECONCILE_SECRET", "")
+        if not secret or not hmac.compare_digest(request.headers.get("Authorization", ""), "Bearer " + secret):
+            raise provider.ImageTaskError("AUTH_REQUIRED", "需要图片对账凭证。", 401)
+        key = os.getenv("APIMART_IMAGE_API_KEY", "").strip()
+        if not key:
+            raise provider.ImageTaskError("APIMART_IMAGE_NOT_CONFIGURED", "平台图片服务未配置。", 503)
+        store = ImageStore()
+        jobs = store.gateway._request("GET", "/rest/v1/apimart_image_jobs", params={"billing_mode": "eq.platform", "status": "not.in.(completed,failed)", "provider_task_id": "not.is.null", "select": "*", "order": "updated_at.asc", "limit": "4"}) or []
+        checked = 0
+        for job in jobs:
+            # Only a server-secret holder can read/save other owners' tasks.
+            server.g.posterflow_storage_scope = "user-" + job["user_id"]
+            try:
+                reconcile(store, job["owner_scope"], key, job)
+                checked += 1
+            except Exception:
+                pass
+        return jsonify(success=True, checked=checked)
+
+    return bp

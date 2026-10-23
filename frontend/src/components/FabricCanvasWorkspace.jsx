@@ -1,4 +1,5 @@
 import { rememberGuestPrompt } from "../lib/promptHistory";
+import { imageGenerationFetch, requestImageModel } from "../lib/apimartImages";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActiveSelection,
@@ -14,7 +15,7 @@ import {
   Textbox,
   Triangle,
 } from "fabric";
-import { MAX_REFERENCE_IMAGES } from "../lib/provider";
+import { MAX_REFERENCE_IMAGES, apimartImageModel } from "../lib/provider";
 import { cleanupReferencePaths, uploadReferenceBlobs } from "../lib/referenceUpload";
 import {
   ArrowUpRight,
@@ -31,6 +32,7 @@ import {
   MousePointer2,
   Pencil,
   Redo2,
+  RefreshCw,
   Sparkles,
   Square,
   Trash2,
@@ -707,6 +709,7 @@ export default function FabricCanvasWorkspace({
   referenceUploadHeaders,
   billingMode = "own_key",
   platformModel,
+  imageResolution = "1K",
   authenticated = false,
   onAuthRequired,
   onAccountRefresh,
@@ -720,6 +723,10 @@ export default function FabricCanvasWorkspace({
   const [busy, setBusy] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
   const [previewBusy, setPreviewBusy] = useState(false);
+  const [importingGenerated, setImportingGenerated] = useState(false);
+  const [failedImports, setFailedImports] = useState([]);
+  const generatedImportLockRef = useRef(false);
+  const generatedImportVersionRef = useRef(0);
   const [referencePreview, setReferencePreview] = useState(null);
   const [aiPanelOpen, setAiPanelOpen] = useState(() => window.matchMedia("(min-width: 1024px)").matches);
   const [workflow, setWorkflow] = useState("frame");
@@ -748,7 +755,13 @@ export default function FabricCanvasWorkspace({
   const persistRef = useRef(() => {});
   const undoRef = useRef(() => {});
   const redoRef = useRef(() => {});
-  const isBusy = busy || aiBusy || previewBusy;
+  const isBusy = busy || aiBusy || previewBusy || importingGenerated;
+
+  useEffect(() => {
+    generatedImportVersionRef.current += 1;
+    setFailedImports([]);
+    return () => { generatedImportVersionRef.current += 1; };
+  }, [authHeaders, authenticated, canvas]);
 
   useEffect(() => { annotationColorRef.current = annotationColor; }, [annotationColor]);
   useEffect(() => { brushWidthRef.current = brushWidth; }, [brushWidth]);
@@ -1220,8 +1233,10 @@ export default function FabricCanvasWorkspace({
       if (!canvas || !files.length) return [];
       setBusy(true);
       setStatus({ type: "loading", message: "正在解析并渲染图片" });
+      let objects = [];
       try {
-        const objects = await Promise.all(files.map((file) => createImageObject(file, { source: "local" })));
+        objects = await Promise.all(files.map((file) => createImageObject(file, { source: "local" })));
+        if (canvas.disposed || canvas.destroyed) return [];
         const center = point || canvasCenter(canvas);
         const gap = 36;
         const totalWidth = objects.reduce((sum, object) => sum + object.getScaledWidth(), 0) + gap * (objects.length - 1);
@@ -1256,6 +1271,15 @@ export default function FabricCanvasWorkspace({
         onNotice?.("已加入画布：" + objects.length + " 张图片");
         return objects;
       } catch (error) {
+        // Do not leave newly inserted objects behind if pixel rendering failed:
+        // retrying this batch must not duplicate them or remove prior content.
+        batchRef.current = true;
+        if (!canvas.disposed && !canvas.destroyed) {
+          const inserted = objects.filter(object => canvas.getObjects().includes(object));
+          if (inserted.length) canvas.remove(...inserted);
+          canvas.requestRenderAll();
+          setSelection(selectionSnapshot(canvas));
+        }
         batchRef.current = false;
         console.error("Failed to add Fabric canvas files", error);
         setStatus({ type: "error", message: "图片导入失败" });
@@ -1268,33 +1292,51 @@ export default function FabricCanvasWorkspace({
     [canvas, onNotice],
   );
 
-  const fetchGeneratedFile = useCallback(async (filename) => {
-    const blob = await fetchImageBlob(filename, { authenticated, headers: authHeaders });
+  const fetchGeneratedFile = useCallback(async (filename, { forceRefresh = false } = {}) => {
+    const blob = await fetchImageBlob(filename, { authenticated, headers: authHeaders, forceRefresh });
     return new File([blob], imageFilename(filename, blob.type), { type: blob.type || "image/png" });
   }, [authHeaders, authenticated]);
 
   const addGeneratedImages = useCallback(
-    async (filenames) => {
-      if (!canvas || !filenames.length) return [];
+    async (filenames, { forceRefresh = false } = {}) => {
+      if (!canvas || !filenames.length || generatedImportLockRef.current) return [];
+      const names = [...new Set(filenames)];
+      const requested = new Set(names);
+      const version = generatedImportVersionRef.current;
+      generatedImportLockRef.current = true;
+      setImportingGenerated(true);
       setStatus({ type: "loading", message: "正在读取生成图片" });
       try {
-        const files = await Promise.all(filenames.map(fetchGeneratedFile));
-        return await addFiles(files);
-      } catch (error) {
-        console.error("Failed to import generated images", error);
-        setStatus({ type: "error", message: "生成图片读取失败" });
-        onNotice?.("生成图片已过期或暂时无法读取");
-        return [];
+        const results = await Promise.allSettled(names.map(name => fetchGeneratedFile(name, { forceRefresh })));
+        if (version !== generatedImportVersionRef.current || canvas.disposed || canvas.destroyed) return [];
+        const failures = results.flatMap((result, index) => result.status === "rejected"
+          ? [{ filename: names[index], reason: result.reason?.message || "原图暂时无法读取，请重试。" }] : []);
+        const readable = results.flatMap((result, index) => result.status === "fulfilled"
+          ? [{ filename: names[index], file: result.value }] : []);
+        const objects = readable.length ? await addFiles(readable.map(item => item.file)) : [];
+        if (version !== generatedImportVersionRef.current) return objects;
+        if (objects.length !== readable.length) {
+          failures.push(...readable.map(item => ({ filename: item.filename, reason: "图片未完成解码或渲染，请重试导入。" })));
+        }
+        setFailedImports(previous => [...previous.filter(item => !requested.has(item.filename)), ...failures].slice(-100));
+        if (failures.length) {
+          setStatus({ type: "error", message: `${failures.length} 张图片未加入画布，可重试` });
+          onNotice?.(objects.length ? `已加入 ${objects.length} 张图片，另有 ${failures.length} 张可重试` : "原图读取失败，可在画布上方重试，不会重新生图或扣积分。");
+        }
+        return objects;
+      } finally {
+        generatedImportLockRef.current = false;
+        setImportingGenerated(false);
       }
     },
     [addFiles, canvas, fetchGeneratedFile, onNotice],
   );
 
   useEffect(() => {
-    if (!canvasReady || !pendingImport?.id || handledImportsRef.current.has(pendingImport.id)) return;
+    if (!canvasReady || isBusy || generatedImportLockRef.current || !pendingImport?.id || handledImportsRef.current.has(pendingImport.id)) return;
     handledImportsRef.current.add(pendingImport.id);
     addGeneratedImages(pendingImport.filenames).finally(() => onImportHandled?.(pendingImport.id));
-  }, [addGeneratedImages, canvasReady, onImportHandled, pendingImport]);
+  }, [addGeneratedImages, canvasReady, isBusy, onImportHandled, pendingImport]);
 
   const handleFileChange = async (event) => {
     const files = Array.from(event.target.files || []);
@@ -1537,15 +1579,18 @@ export default function FabricCanvasWorkspace({
 
       requestId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
       body.request_id = requestId;
-      const requestBody = JSON.stringify(body);
       generationRequestStarted = true;
       if (!authenticated) rememberGuestPrompt(body.prompt, requestId);
-      const response = await fetch(endpoint, {
+      const spec = apimartImageModel(requestImageModel(body, providerHeaders));
+      const imageGenerationVersion = generatedImportVersionRef.current;
+      if (spec) body.resolution = spec.resolutions.includes(imageResolution) ? imageResolution : spec.resolutions[0];
+      const response = await imageGenerationFetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Request-Id": requestId, ...providerHeaders },
-        body: requestBody,
+        body: JSON.stringify(body),
       });
       const data = await readApiResponse(response);
+      if (spec && imageGenerationVersion !== generatedImportVersionRef.current) return;
       if (!response.ok || data.error) {
         setAiError(apiError(data, workflow === "frame" ? "图框生成失败" : "画布重绘失败"));
         setStatus({ type: "error", message: workflow === "frame" ? "图框生成失败" : "画布重绘失败" });
@@ -1768,6 +1813,26 @@ export default function FabricCanvasWorkspace({
           </button>
         </div>
       </div>
+
+      {!!failedImports.length && (
+        <div role="alert" aria-label="图片导入失败" className="shrink-0 border-b border-gold/30 bg-gold/8 px-4 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-medium text-text-primary">{failedImports.length} 张图片未加入画布</p>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" disabled={!canvasReady || isBusy}
+                onClick={() => addGeneratedImages(failedImports.map(item => item.filename), { forceRefresh: true })}
+                className="inline-flex min-h-10 items-center gap-2 rounded-md border border-accent/40 bg-accent/10 px-3 text-sm text-accent disabled:cursor-wait disabled:opacity-55">
+                {importingGenerated ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}重试导入失败图片
+              </button>
+              <button type="button" disabled={importingGenerated} onClick={() => setFailedImports([])} className="min-h-10 rounded-md px-2 text-xs text-text-muted disabled:opacity-55">清除提示</button>
+            </div>
+          </div>
+          <p className="mt-1 text-xs leading-5 text-text-muted">成功导入的图片会保留。重试只读取失败图片，不重新生成，不扣积分。</p>
+          <ul className="mt-1 max-h-20 space-y-1 overflow-y-auto text-xs leading-5 text-gold">
+            {failedImports.map((item, index) => <li key={item.filename} className="break-words" title={item.filename}>图片 {index + 1}：{item.reason}</li>)}
+          </ul>
+        </div>
+      )}
 
       <div className="relative min-h-0 flex-1 overflow-hidden bg-[#111821]">
         <div ref={canvasHostRef} className="absolute inset-0 overflow-hidden">

@@ -2518,6 +2518,13 @@ except ModuleNotFoundError:
 
 app.register_blueprint(create_music_blueprint(require_authenticated_user, optional_authenticated_user, enforce_rate_limit, ALLOWED_ORIGINS))
 
+try:
+    from backend.apimart_image_routes import create_image_blueprint
+except ModuleNotFoundError:
+    from apimart_image_routes import create_image_blueprint
+import sys
+app.register_blueprint(create_image_blueprint(sys.modules[__name__]))
+
 
 if os.path.exists(FRONTEND_BUILD):
     app.static_folder = FRONTEND_BUILD

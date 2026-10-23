@@ -19,7 +19,13 @@ Flow Music 提供风格描述、歌词、标题、目标时长、BPM 和种子�
 
 平台创建任务为 `POST /v1/music/generations`，从 `data[0].task_id` 取得编号；查询为 `GET /v1/music/tasks/{task_id}`。完成状态读取 `data.status`，不根据 100% 进度推断完成。音乐从 `data.result.music[]` 读取，保留原始 1 起始索引，不固定返回两首。音频 URL 不要求以 mp3 结尾；兼容两类时长字段及 Flow 的可选 WAV 链接。
 
-自定义模式中的查询地址须包含一次 `{task_id}`；留空则从生成接口推导同级 `tasks/{task_id}`。两个地址须同域、HTTPS，不接受 URL 凭据或查询参数。服务端解析并校验公网地址，连接时固定已验证 IP、保留 TLS 主机名验证；禁止私网、自动重定向和自动 POST 重试。
+自定义模式中的查询地址须包含一次 `{task_id}`；留空则从生成接口推导同级 `tasks/{task_id}`。两个地址须同域、HTTPS，不接受 URL 凭据或查询参数。任意自定义服务商会解析并校验公网地址，连接时固定已验证 IP、保留 TLS 主机名验证。APIMart 官方域名的标准生成/查询路由经过精确识别后，与平台模式使用同一 requests 网络路径，支持服务端受信任的系统代理；相似域名和其他路径不使用此例外。两种路径均禁止自动重定向和自动 POST 重试。
+
+### Suno 最简使用与连接排查
+
+选择自定义 API Key、完整生成地址 `https://api.apimart.ai/v1/music/generations`、Bearer Token；查询地址可留空。Suno v6 的“灵感成曲”把描述作为 `prompt`、发送 `custom=false`，开启纯音乐时发送 `instrumental=true`。目标时长无需填写。成功受理后由 `data[0].task_id` 获取服务商编号，再查询 `GET /v1/music/tasks/{task_id}`，以 completed/failed 为终态；结果音频在 `data.result.music[]`。
+
+“提交结果待确认”且没有服务商编号，表示未取得可靠的受理结果，并不是正常的等待生成。刷新只能核对本站记录，不能凭本站 UUID 从上游找回未知编号。应先核对服务商调用记录，不能自动重发。Windows 网络依赖代理时，任意自定义地址的固定 IP 直连可能超时；已知 APIMart 标准接口现使用与平台模式一致的网络路径。诊断日志只记录请求方法、路径类别及异常类型，不记录 Key、请求正文或原始异常文字。
 
 ## 任务与积分
 
@@ -45,7 +51,7 @@ Flow Music 提供风格描述、歌词、标题、目标时长、BPM 和种子�
 ## 本地启用
 
 1. 在新版目录使用独立开发 Supabase 配置，不复制原站生产 `.env` 或 `.vercel`。
-2. 在开发数据库应用新增迁移 `supabase/migrations/20261022164535_music_generation.sql`，不要重跑已有生产迁移。
+2. 空开发库须先按顺序应用既有基础迁移，再应用音乐迁移 `supabase/migrations/20261022164535_music_generation.sql` 和后续权限修复。已有库应核对迁移记录、只补缺失项，不要重跑已有生产迁移。
 3. 服务端配置 `SUPABASE_URL`、`SUPABASE_SERVICE_ROLE_KEY`（或现有 Secret Key 别名）。平台音乐另配 `APIMART_MUSIC_API_KEY`，不能使用 VITE_ 前缀。
 4. 登录能力使用浏览器安全的 VITE_SUPABASE_URL、VITE_SUPABASE_ANON_KEY / PUBLISHABLE_KEY。平台模式须登录并验证邮箱；自定义模式可使用访客 Key，但仍需要音乐任务数据库就绪。
 5. 运行开发前端 3001、后端 5001。4174 依旧是静态只读设计预览，不代理真实账号、数据库或音乐请求，503 属于预期。

@@ -108,7 +108,7 @@ export default function StudioWorkspace({ area, onAreaChange, onStartImage, user
         <div className="studio-model-grid">{filteredModels.map(model => {
           const Icon = ICONS[model.area];
           return <article className={`studio-model-card studio-tone-${model.area}`} key={model.id}>
-            <div><span className="studio-model-icon"><Icon size={21} /></span><small>{STUDIO_AREAS.find(item => item.id === model.area).short} / {model.maker}</small></div><h2>{model.name}</h2><p>{model.summary}</p><footer><span>{model.available ? "现有图像功能" : model.area === "music" ? "音乐创作 · 2 积分 / 首" : "模型预览 · 规划接入"}</span></footer>
+            <div><span className="studio-model-icon"><Icon size={21} /></span><small>{STUDIO_AREAS.find(item => item.id === model.area).short} / {model.maker}</small></div><h2>{model.name}</h2><p>{model.summary}</p><footer><span>{model.provider === "apimart" ? "已接入 · 需配置图片服务" : model.available ? "现有图像功能" : model.area === "music" ? "音乐创作 · 2 积分 / 首" : "模型预览 · 规划接入"}</span></footer>
           </article>;
         })}</div>
         {!filteredModels.length && <div className="studio-empty-state"><Search size={28} /><h2>没有找到匹配的模型</h2><p>试试其他名称，或选择全部创作类型。</p><button type="button" className="studio-secondary" onClick={() => { setModelSearch(""); setModelFilter("all"); }}>清除筛选</button></div>}

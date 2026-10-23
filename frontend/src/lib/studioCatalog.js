@@ -11,10 +11,10 @@ export const IMAGE_MODELS = [
   { id: "gpt-image-2.5-flare", name: "GPT Image 2.5 Flare", maker: "GPT Image", summary: "沿用现有图像工作区", available: true },
   { id: "gpt-image-2.5-sunburst", name: "GPT Image 2.5 Sunburst", maker: "GPT Image", summary: "沿用现有图像工作区", available: true },
   { id: "gpt-image-2", name: "GPT Image 2", maker: "GPT Image", summary: "沿用现有图像工作区", available: true },
-  { id: "nano-banana-2.1", name: "Nano Banana 2.1", maker: "Nano Banana", summary: "新增图像模型 · 规划接入" },
-  { id: "nano-banana-pro", name: "Nano Banana Pro", maker: "Nano Banana", summary: "新增图像模型 · 规划接入" },
-  { id: "grok-imagine-image-2.0", name: "grok-imagine-image-2.0", maker: "Grok", summary: "新增图像模型 · 规划接入" },
-  { id: "grok-imagine-2.0-ext", name: "grok-imagine-2.0-ext", maker: "Grok", summary: "新增图像模型 · 规划接入" },
+  { id: "nano-banana-2.1", name: "Nano Banana 2.1", maker: "Nano Banana", summary: "文生图与参考图编辑 · 1 积分 / 张", available: true, provider: "apimart" },
+  { id: "nano-banana-pro", name: "Nano Banana Pro", maker: "Nano Banana", summary: "单张创作与参考图编辑 · 1 积分 / 张", available: true, provider: "apimart" },
+  { id: "grok-imagine-image-2.0", name: "grok-imagine-image-2.0", maker: "Grok", summary: "文生图与最多 3 张参考图 · 1 积分 / 张", available: true, provider: "apimart" },
+  { id: "grok-imagine-2.0-ext", name: "grok-imagine-2.0-ext", maker: "Grok", summary: "文生图 · 质量模式 · 1 积分 / 张", available: true, provider: "apimart" },
 ];
 export const MUSIC_MODELS = [
   { id: "suno", name: "suno", maker: "Suno", summary: "灵感成曲 · 自定义歌词 · 纯音乐", draftReady: true },

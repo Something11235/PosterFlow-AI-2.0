@@ -1,6 +1,7 @@
 """APIMart music only. Image providers are deliberately independent."""
 import ipaddress
 import json
+import logging
 import math
 import re
 import socket
@@ -13,6 +14,7 @@ API_BASE = "https://api.apimart.ai/v1/music"
 SUNO_VERSIONS = ("v6", "v6-wild", "v6-mini")
 FLOW_VERSIONS = ("lyria-3-pro", "lyria-3.5")
 TASK_ID = re.compile(r"^[A-Za-z0-9_-]{8,160}$")
+logger = logging.getLogger(__name__)
 
 
 class MusicError(Exception):
@@ -229,13 +231,36 @@ def pinned_custom_response(method, url, headers, body):
     return response
 
 
+def trusted_apimart_url(method, endpoint):
+    """Canonicalize only the documented APIMart routes for standard transport.
+
+    A server-controlled proxy may be required on the developer's network.
+    Arbitrary custom providers still use the pinned public-IP transport.
+    """
+    if not safe_media_url(endpoint):
+        return None
+    parsed = urlsplit(endpoint)
+    if parsed.hostname.lower() != "api.apimart.ai" or parsed.query or parsed.fragment:
+        return None
+    if method == "POST" and parsed.path == "/v1/music/generations":
+        return API_BASE + "/generations"
+    prefix = "/v1/music/tasks/"
+    if method == "GET" and parsed.path.startswith(prefix) and TASK_ID.fullmatch(parsed.path[len(prefix):]):
+        return API_BASE + "/tasks/" + parsed.path[len(prefix):]
+    return None
+
+
 def apimart_request(method, path, key, body=None, endpoint=None, auth_type="bearer"):
     headers = {"Content-Type": "application/json"}
     headers["Authorization" if auth_type == "bearer" else "x-api-key"] = f"Bearer {key}" if auth_type == "bearer" else key
     response = None
+    standard_url = trusted_apimart_url(method, endpoint) if endpoint else API_BASE + path
     try:
-        response = pinned_custom_response(method, endpoint, headers, body) if endpoint else requests.request(method, API_BASE + path, headers=headers, json=body, timeout=(8, 35), allow_redirects=False, stream=True)
+        response = requests.request(method, standard_url, headers=headers, json=body, timeout=(8, 35), allow_redirects=False, stream=True) if standard_url else pinned_custom_response(method, endpoint, headers, body)
     except requests.RequestException as exc:
+        # Log classes only: exception text may contain provider URLs or secrets.
+        cause = exc.__cause__ or exc.__context__
+        logger.warning("Music transport failed: method=%s route=%s error=%s cause=%s", method, "apimart" if standard_url else "custom", type(exc).__name__, type(cause).__name__ if cause else "none")
         raise MusicError("MUSIC_SUBMISSION_UNKNOWN" if method == "POST" else "MUSIC_QUERY_UNAVAILABLE", "暂时无法确认提交结果，请保留请求编号并查询，勿重复生成。" if method == "POST" else "音乐任务查询暂时不可用，请稍后刷新。", 503, method == "POST") from exc
     with response:
         chunks, size = [], 0

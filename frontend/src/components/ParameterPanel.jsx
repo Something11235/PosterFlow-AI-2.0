@@ -28,6 +28,9 @@ export default function ParameterPanel({
   onCountChange,
   sizes,
   mode,
+  apimartSpec,
+  resolution,
+  onResolutionChange,
 }) {
   const sizeMap = Object.keys(sizes || {}).length ? sizes : FALLBACK_SIZES;
   const customSizeActive = size === "custom";
@@ -152,7 +155,7 @@ export default function ParameterPanel({
       <fieldset className="mb-4">
         <legend className="mb-2 text-sm font-medium text-text-secondary">批量生成</legend>
         <div className="grid grid-cols-4 gap-2">
-          {[1, 2, 3, 4].map((value) => (
+          {[1, 2, 3, 4].filter(value => !apimartSpec || value <= apimartSpec.maxCount).map((value) => (
             <button
               key={value}
               type="button"
@@ -170,6 +173,10 @@ export default function ParameterPanel({
         </div>
       </fieldset>
 
+      {apimartSpec && <div className="mb-4 space-y-3 rounded-lg border border-accent/25 bg-accent/5 p-3">
+        <label className="block text-xs text-text-secondary">清晰度<select aria-label="图片清晰度" value={resolution} onChange={event => onResolutionChange(event.target.value)} className="mt-2 min-h-11 w-full rounded-md border border-border-default bg-bg-primary px-3 text-sm text-text-primary">{apimartSpec.resolutions.map(value => <option key={value} value={value}>{value === "quality" ? "质量模式" : value}</option>)}</select></label>
+        <p className="text-xs leading-5 text-text-muted">每张 1 积分 · 单次最多 {apimartSpec.maxCount} 张 · {apimartSpec.maxReferences ? `最多 ${apimartSpec.maxReferences} 张参考图` : "仅支持文生图"}。画面采用比例控制，实际像素以生成结果为准。</p>
+      </div>}
 
       <div className="rounded-lg border border-border-subtle bg-bg-primary/55 p-3">
         <p className="text-xs leading-6 text-text-muted">
