@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { BarChart3, BookOpen, CalendarDays, Check, Loader2, Save } from "lucide-react";
 import { ADMIN_STATS_START, amountInCents, beijingDate, formatLedgerAmount, money, summarizeDays } from "../lib/adminBookkeeping";
 
+import AdminActivityChart from "./AdminActivityChart";
+
 const INPUT = "mt-2 min-h-11 w-full min-w-0 rounded-md border border-border-default bg-bg-primary px-3 text-sm text-text-primary outline-none focus:border-accent disabled:opacity-50";
 const BUTTON = "inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-accent px-4 text-sm font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50";
 
@@ -33,7 +35,7 @@ function TrendChart({ days, financial = false, onSelect }) {
   </div>;
 }
 
-export default function AdminBookkeepingPanel({ initialData, authHeaders, loading, onSavingChange }) {
+export default function AdminBookkeepingPanel({ initialData, authHeaders, loading, onSavingChange, activeDays = [], activityError }) {
   const [data, setData] = useState(null);
   const [daily, setDaily] = useState(null);
   const [statDate, setStatDate] = useState(() => beijingDate());
@@ -129,6 +131,7 @@ export default function AdminBookkeepingPanel({ initialData, authHeaders, loadin
       ].map(([title, number, detail, color]) => <div key={title} className="rounded-md border border-border-subtle bg-bg-primary/60 p-3"><p className="text-xs text-text-muted">{title}</p><p className={`mt-2 break-all text-2xl font-semibold tabular-nums ${color}`}>{number}</p><p className="mt-2 text-xs text-text-muted">{detail}</p></div>)}</div>
       <p className="my-3 text-xs leading-5 text-text-muted">金额汇总只包含纯数字（最多两位小数）。空白表示未记录，填写 0 才表示当日为零。{summary.textDays > 0 && `有 ${summary.textDays} 天包含文字金额，文字部分保留在明细中，不计入金额合计。`}</p>
       {days.length > 0 ? <div className="grid gap-3 lg:grid-cols-2"><TrendChart days={days} onSelect={chooseDay} /><TrendChart days={days} financial onSelect={chooseDay} /></div> : <p className="py-6 text-center text-sm text-text-muted">加载后显示每日趋势。</p>}
+      <AdminActivityChart days={activeDays} error={activityError} />
       <div className="mt-4 max-h-72 overflow-auto rounded-md border border-border-subtle"><table className="w-full min-w-[670px] text-left text-xs"><caption className="sr-only">每日经营明细，点击编辑可以补记或修改当天记录</caption><thead className="sticky top-0 bg-bg-secondary text-text-muted"><tr>{["日期", "新增用户", "充值金额（元）", "已消耗成本（元）", "备注", "操作"].map(title => <th key={title} className="px-3 py-3 font-medium">{title}</th>)}</tr></thead><tbody className="divide-y divide-border-subtle">{[...days].reverse().map(day => <tr key={day.stat_date} className={day.stat_date === statDate ? "bg-accent/8" : ""}><td className="whitespace-nowrap px-3 py-2 text-text-secondary">{day.stat_date}</td><td className="px-3 py-2 tabular-nums text-text-secondary">{day.new_users}</td><td className="max-w-48 break-words px-3 py-2 text-mint">{day.recharge_text || <span className="text-text-muted">未填写</span>}</td><td className="max-w-48 break-words px-3 py-2 text-gold">{day.cost_text || <span className="text-text-muted">未填写</span>}</td><td className="max-w-60 break-words px-3 py-2 text-text-muted">{day.note || "—"}</td><td className="px-3 py-1"><button type="button" disabled={locked} className="min-h-11 px-2 text-accent disabled:opacity-50" aria-label={`编辑 ${day.stat_date} 的每日记录`} onClick={() => chooseDay(day)}>编辑</button></td></tr>)}</tbody></table></div>
     </div>
   </section>;

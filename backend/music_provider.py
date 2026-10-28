@@ -10,7 +10,13 @@ from urllib.parse import urlsplit
 import requests
 import urllib3
 
+try:
+    from backend.music_failure_reasons import failure_code, failure_reason
+except ModuleNotFoundError:
+    from music_failure_reasons import failure_code, failure_reason
+
 API_BASE = "https://api.apimart.ai/v1/music"
+TASKS_BASE = "https://api.apimart.ai/v1/tasks"
 SUNO_VERSIONS = ("v6", "v6-wild", "v6-mini")
 FLOW_VERSIONS = ("lyria-3-pro", "lyria-3.5")
 TASK_ID = re.compile(r"^[A-Za-z0-9_-]{8,160}$")
@@ -18,9 +24,11 @@ logger = logging.getLogger(__name__)
 
 
 class MusicError(Exception):
-    def __init__(self, code, message, status=400, uncertain=False):
+    def __init__(self, code, message, status=400, uncertain=False, provider_status=None, provider_code=None, reason_code=None):
         super().__init__(message)
         self.code, self.message, self.status, self.uncertain = code, message, status, uncertain
+        self.provider_status, self.provider_code = provider_status, provider_code
+        self.reason_code = reason_code
 
 
 def text(value, name, maximum):
@@ -173,6 +181,7 @@ def normalize_task(payload, task_id):
         except (TypeError, ValueError):
             duration = 0
         tracks.append({
+            "clip_id": str(track.get("clip_id", "")) if TASK_ID.fullmatch(str(track.get("clip_id", ""))) else "",
             "audio_index": index, "title": str(track.get("title") or f"音乐 {index}")[:200],
             "lyrics": str(track.get("lyrics") or "")[:20000],
             "tags": str(track.get("display_tags") or track.get("tags") or "")[:1000],
@@ -180,8 +189,14 @@ def normalize_task(payload, task_id):
             "audio_url": url, "wav_url": safe_media_url(track.get("wav_url")),
             "image_url": safe_media_url(track.get("image_url")),
         })
-    return {"provider_task_id": task_id, "status": status, "progress": progress, "tracks": tracks,
-            "error_code": "MUSIC_TASK_FAILED" if status == "failed" else None}
+    clip_ids = [track["clip_id"] for track in music if isinstance(track, dict) and isinstance(track.get("clip_id"), str)
+                and TASK_ID.fullmatch(track["clip_id"]) and track.get("status") not in {"error", "failed"}]
+    return {"provider_task_id": task_id, "status": status, "progress": progress, "tracks": tracks, "clip_ids": clip_ids,
+            "error_code": failure_code({
+                "error": data.get("error"), "message": data.get("message"),
+                "error_message": data.get("error_message"), "failure_reason": data.get("failure_reason"),
+                "cause": result.get("error") if isinstance(result, dict) else None,
+            }) if status == "failed" else None}
 
 
 def custom_endpoints(endpoint, query_template=""):
@@ -240,13 +255,17 @@ def trusted_apimart_url(method, endpoint):
     if not safe_media_url(endpoint):
         return None
     parsed = urlsplit(endpoint)
-    if parsed.hostname.lower() != "api.apimart.ai" or parsed.query or parsed.fragment:
+    if parsed.hostname.lower() != "api.apimart.ai" or parsed.fragment:
         return None
-    if method == "POST" and parsed.path == "/v1/music/generations":
+    if method == "POST" and parsed.path == "/v1/music/generations" and not parsed.query:
         return API_BASE + "/generations"
-    prefix = "/v1/music/tasks/"
-    if method == "GET" and parsed.path.startswith(prefix) and TASK_ID.fullmatch(parsed.path[len(prefix):]):
-        return API_BASE + "/tasks/" + parsed.path[len(prefix):]
+    # The documented music-only route returns 403 for a real accepted music
+    # task with this account. The unified route returns the matching task and
+    # its tracks. Canonicalize old saved APIMart query templates as well.
+    if method == "GET" and parsed.query in ("", "language=zh"):
+        for prefix in ("/v1/tasks/", "/v1/music/tasks/"):
+            if parsed.path.startswith(prefix) and TASK_ID.fullmatch(parsed.path[len(prefix):]):
+                return TASKS_BASE + "/" + parsed.path[len(prefix):] + ("?language=zh" if parsed.query else "")
     return None
 
 
@@ -272,12 +291,22 @@ def apimart_request(method, path, key, body=None, endpoint=None, auth_type="bear
                 chunks.append(chunk)
             payload = json.loads(b"".join(chunks))
         except (ValueError, requests.RequestException) as exc:
+            logger.warning("Music response invalid: method=%s http=%s reason=%s", method, response.status_code, type(exc).__name__)
             raise MusicError("MUSIC_BAD_RESPONSE", "音乐服务响应异常，请保留请求编号。", 502, method == "POST") from exc
         if not 200 <= response.status_code < 300 or not isinstance(payload, dict) or payload.get("code") != 200:
             # Only explicit request rejection is safe to refund. A 5xx, proxy
             # error or malformed success may follow an accepted paid request.
             rejected = response.status_code in {400, 401, 402, 403, 404, 422, 429} and isinstance(payload, dict) and isinstance(payload.get("error"), dict)
-            raise MusicError("MUSIC_PROVIDER_REJECTED" if rejected else "MUSIC_PROVIDER_UNAVAILABLE", "音乐服务未受理本次请求，请检查 Key、余额、模型权限和输入。" if rejected else "音乐服务暂时无法确认结果，请保留请求编号。", 502, method == "POST" and not rejected)
+            # Provider messages can contain submitted text or credentials. Only
+            # expose a fixed allowlist of diagnostic codes, never the raw body.
+            raw_code = payload["error"].get("code") if isinstance(payload, dict) and isinstance(payload.get("error"), dict) else None
+            safe_code = raw_code if isinstance(raw_code, str) and raw_code in {"task_not_found", "invalid_request", "invalid_request_error", "authentication_error", "invalid_api_key", "permission_error", "quota_not_enough", "insufficient_quota", "rate_limit_error", "not_found"} else "other"
+            logger.warning("Music provider response rejected: method=%s http=%s provider_code=%s", method, response.status_code, safe_code)
+            if method == "GET":
+                raise MusicError("MUSIC_QUERY_REJECTED" if rejected else "MUSIC_QUERY_UNAVAILABLE", f"服务商暂未返回任务结果（HTTP {response.status_code}）。这不表示生成失败，请保留原任务后重试查询。", 502, provider_status=response.status_code, provider_code=safe_code)
+            reason = failure_code(payload.get("error")) if isinstance(payload, dict) else "MUSIC_TASK_FAILED"
+            message = failure_reason(reason) if rejected and reason != "MUSIC_TASK_FAILED" else "音乐服务未受理本次请求，请检查 Key、余额、模型权限和输入。" if rejected else "音乐服务暂时无法确认结果，请保留请求编号。"
+            raise MusicError("MUSIC_PROVIDER_REJECTED" if rejected else "MUSIC_PROVIDER_UNAVAILABLE", message, 502, not rejected, provider_status=response.status_code, provider_code=safe_code, reason_code=reason if rejected and reason != "MUSIC_TASK_FAILED" else None)
         return payload
 
 
@@ -292,5 +321,5 @@ def submit_music(key, body, endpoint=None, auth_type="bearer"):
 def query_music(key, task_id, query_template=None, auth_type="bearer"):
     if not TASK_ID.fullmatch(task_id):
         raise MusicError("INVALID_MUSIC_TASK", "音乐任务编号无效。")
-    endpoint = query_template.replace("{task_id}", task_id) if query_template else None
+    endpoint = query_template.replace("{task_id}", task_id) if query_template else TASKS_BASE + "/" + task_id + "?language=zh"
     return normalize_task(apimart_request("GET", f"/tasks/{task_id}?language=zh", key, endpoint=endpoint, auth_type=auth_type), task_id)

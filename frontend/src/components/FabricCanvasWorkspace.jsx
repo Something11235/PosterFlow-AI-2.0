@@ -709,6 +709,8 @@ export default function FabricCanvasWorkspace({
   referenceUploadHeaders,
   billingMode = "own_key",
   platformModel,
+  imageModel,
+  onImageModelChange,
   imageResolution = "1K",
   authenticated = false,
   onAuthRequired,
@@ -717,6 +719,7 @@ export default function FabricCanvasWorkspace({
   onOpenRecharge,
   onCanvasGenerated,
 }) {
+  const modelReferenceLimit = apimartImageModel(imageModel)?.maxReferences ?? MAX_REFERENCE_IMAGES;
   const [canvas, setCanvas] = useState(null);
   const [canvasReady, setCanvasReady] = useState(false);
   const [status, setStatus] = useState({ type: "saved", message: "正在读取本机画布" });
@@ -1335,8 +1338,9 @@ export default function FabricCanvasWorkspace({
   useEffect(() => {
     if (!canvasReady || isBusy || generatedImportLockRef.current || !pendingImport?.id || handledImportsRef.current.has(pendingImport.id)) return;
     handledImportsRef.current.add(pendingImport.id);
-    addGeneratedImages(pendingImport.filenames).finally(() => onImportHandled?.(pendingImport.id));
-  }, [addGeneratedImages, canvasReady, isBusy, onImportHandled, pendingImport]);
+    const importing = pendingImport.files?.length ? addFiles(pendingImport.files) : addGeneratedImages(pendingImport.filenames || []);
+    importing.finally(() => onImportHandled?.(pendingImport.id));
+  }, [addFiles, addGeneratedImages, canvasReady, isBusy, onImportHandled, pendingImport]);
 
   const handleFileChange = async (event) => {
     const files = Array.from(event.target.files || []);
@@ -1471,6 +1475,10 @@ export default function FabricCanvasWorkspace({
     }
     if (!canvas || !providerConfigured || aiBusy) return;
     const currentSelection = selectionSnapshot(canvas);
+    if (workflow !== "frame" && (modelReferenceLimit === 0 || currentSelection.imageCount > modelReferenceLimit)) {
+      setAiError({ message: modelReferenceLimit === 0 ? "当前模型不支持参考图重绘" : `当前模型最多支持 ${modelReferenceLimit} 张参考图`, detail: "请减少所选图片，或切换到其他图片模型。" });
+      return;
+    }
     const manualPrompt = drafts[workflow].trim();
     const hasAnnotationInstructions = currentSelection.annotationTexts.length > 0;
     const prompt = manualPrompt || (hasAnnotationInstructions ? "按照画布标注逐项修改" : "");
@@ -1521,10 +1529,10 @@ export default function FabricCanvasWorkspace({
         const cleanReferences = await Promise.all(selectedImages.map((item) => exportObjects(
           canvas, [item.raw], 0, REFERENCE_EXPORT_MAX_EDGE, CLEAN_REFERENCE_MAX_BYTES,
         )));
-        const annotationReference = currentSelection.annotationCount && cleanReferences.length < MAX_REFERENCE_IMAGES
+        const annotationReference = currentSelection.annotationCount && cleanReferences.length < modelReferenceLimit
           ? await exportObjects(canvas, currentSelection.objects, 24, REFERENCE_EXPORT_MAX_EDGE, ANNOTATED_REFERENCE_MAX_BYTES)
           : null;
-        const maskBlob = currentSelection.annotationCount
+        const maskBlob = currentSelection.annotationCount && !apimartImageModel(imageModel)
           ? await exportEditMask(canvas, target, currentSelection.objects.filter((object) => object !== target && ANNOTATION_TYPES.has(object.posterflowType)))
           : null;
         const referenceEntries = cleanReferences.map((blob, index) => ({
@@ -1583,7 +1591,7 @@ export default function FabricCanvasWorkspace({
       if (!authenticated) rememberGuestPrompt(body.prompt, requestId);
       const spec = apimartImageModel(requestImageModel(body, providerHeaders));
       const imageGenerationVersion = generatedImportVersionRef.current;
-      if (spec) body.resolution = spec.resolutions.includes(imageResolution) ? imageResolution : spec.resolutions[0];
+      if (spec && !spec.automaticResolution) body.resolution = spec.resolutions.includes(imageResolution) ? imageResolution : spec.resolutions[0];
       const response = await imageGenerationFetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Request-Id": requestId, ...providerHeaders },
@@ -1908,6 +1916,10 @@ export default function FabricCanvasWorkspace({
 
         {aiPanelOpen && (
           <CanvasAiPanel
+            imageModel={imageModel}
+            referenceLimit={modelReferenceLimit}
+            onImageModelChange={onImageModelChange}
+            billingMode={billingMode}
             workflow={workflow}
             onWorkflowChange={(nextWorkflow) => {
               setWorkflow(nextWorkflow);

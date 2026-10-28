@@ -124,3 +124,12 @@ cd ..
 - [更新记录](CHANGELOG.md)
 - [安全说明](SECURITY.md)
 - [界面规范](docs/UI_DESIGN_SPEC.md)
+
+MiniMax H3 的能力边界、实际费用计价与本地验收见 [接入说明](docs/video-minimax-h3.md)（本地待发布）。
+
+MiniMax H3 Max 的独立参数、计价和验证见[接入说明](docs/video-minimax-h3-max.md)（本地待发布）。
+
+Wan 3.0 的素材、文档与网页支持、实际费用计价和本地验收见[接入说明](docs/video-wan30.md)（本地待发布）。
+
+
+视频新增 MiniMax H3、H3 Max、Wan 3.0 与 FLUX 3 Video；默认 Seedance 2.5。新模型实际用量按 USD×7÷0.38×1.2 上取整0.5积分，Mini固定秒价不变。FLUX支持有序关键帧/MP4续写/草稿转正式片（两次独立计费），详 [FLUX说明](docs/video-flux3.md)。

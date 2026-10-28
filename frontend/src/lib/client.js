@@ -1,3 +1,6 @@
+import { saveBrowserFile } from "./browserSave.js";
+import { readImageRelay } from "./imageRelay.js";
+
 const CLIENT_STORAGE_KEY = "posterflow.client.v1";
 
 function createClientId() {
@@ -27,6 +30,7 @@ export function apiAssetUrl(kind, filename, { authenticated = false } = {}) {
 
 const imageUrls = new Map();
 const pendingImageUrls = new Map();
+const imageUrlSources = new Map();
 const MAX_IMAGE_URLS = 256;
 const imageBlobs = new Map();
 const pendingImageBlobs = new Map();
@@ -53,11 +57,11 @@ function withImageTimeout(read, timeoutMs, message) {
     .finally(() => clearTimeout(timer));
 }
 
-function imageCacheIdentity(filename, { authenticated = false, headers = {}, variant = "original" } = {}) {
+function imageCacheIdentity(filename, { authenticated = false, headers = {}, variant = "original", forceBackup = false } = {}) {
   const authorization = new Headers(headers).get("Authorization") || "";
   return {
     cacheable: !authenticated || Boolean(authorization),
-    key: JSON.stringify([CLIENT_ID, authenticated, authorization, filename, variant]),
+    key: JSON.stringify([CLIENT_ID, authenticated, authorization, filename, variant, forceBackup]),
   };
 }
 
@@ -65,14 +69,15 @@ export function clearImageUrlCache() {
   cacheEpoch += 1;
   imageUrls.clear();
   pendingImageUrls.clear();
+  imageUrlSources.clear();
   imageBlobs.clear();
   pendingImageBlobs.clear();
   imageCacheBytes = 0;
 }
 
-export async function fetchImageUrl(filename, { authenticated = false, headers = {}, forceRefresh = false, variant = "original" } = {}) {
+export async function fetchImageUrl(filename, { authenticated = false, headers = {}, forceRefresh = false, variant = "original", forceBackup = false } = {}) {
   // Memory only; never persist URLs or credentials, and never share across users.
-  const { key: cacheKey, cacheable } = imageCacheIdentity(filename, { authenticated, headers, variant });
+  const { key: cacheKey, cacheable } = imageCacheIdentity(filename, { authenticated, headers, variant, forceBackup });
   const epoch = cacheEpoch;
   const cached = imageUrls.get(cacheKey);
   if (cacheable && !forceRefresh && cached?.expiresAt > Date.now()) return cached.url;
@@ -82,6 +87,7 @@ export async function fetchImageUrl(filename, { authenticated = false, headers =
   const params = new URLSearchParams();
   if (!authenticated) params.set("client_id", CLIENT_ID);
   if (variant !== "original") params.set("variant", variant);
+  if (forceBackup) params.set("source", "backup");
   const query = params.size ? `?${params}` : "";
   const fallback = apiAssetUrl("images", filename, { authenticated });
   const pending = (async () => {
@@ -96,6 +102,10 @@ export async function fetchImageUrl(filename, { authenticated = false, headers =
         if (!response.ok || !data?.url) throw new Error("图片临时地址生成失败");
         return data;
       }, IMAGE_URL_TIMEOUT_MS, "图片地址获取超时，请重试。");
+      if (epoch === cacheEpoch) {
+        if (imageUrlSources.size >= MAX_IMAGE_URLS) imageUrlSources.delete(imageUrlSources.keys().next().value);
+        imageUrlSources.set(payload.url, payload.source === "upstream" ? "upstream" : "backup");
+      }
       const ttl = Math.max(0, (Number(payload.expires_in) || 0) - 60) * 1000;
       if (cacheable && epoch === cacheEpoch && ttl > 0 && payload.direct !== false) {
         if (imageUrls.size >= MAX_IMAGE_URLS) imageUrls.delete(imageUrls.keys().next().value);
@@ -124,7 +134,7 @@ export function imageDownloadUrl(url, filename) {
 export async function fetchImageDownloadUrl(filename, options = {}) {
   // This path only obtains a URL. A user-clicked link lets the browser download
   // independently of the shared fetch/blob request used by preview and canvas.
-  const rawUrl = await fetchImageUrl(filename, { ...options, variant: "original", forceRefresh: true });
+  const rawUrl = await fetchImageUrl(filename, { ...options, variant: "original", forceRefresh: true, forceBackup: true });
   const target = new URL(rawUrl, window.location.origin);
   if (target.origin === window.location.origin) {
     return apiAssetUrl("download", filename, options);
@@ -150,10 +160,13 @@ export async function fetchImageBlob(filename, options = {}) {
     imageCacheBytes -= cached.blob.size;
   }
   const pending = (async () => {
+    let useBackup = Boolean(options.forceBackup);
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const url = await fetchImageUrl(filename, { ...options, forceRefresh: Boolean(options.forceRefresh) || attempt > 0 });
+      const url = await fetchImageUrl(filename, { ...options, forceBackup: useBackup, forceRefresh: Boolean(options.forceRefresh) || attempt > 0 });
+      const upstream = imageUrlSources.get(url) === "upstream";
       const sameOrigin = new URL(url, window.location.origin).origin === window.location.origin;
-      const blob = await withImageTimeout(async (signal) => {
+      let blob;
+      try { blob = await withImageTimeout(async (signal) => {
         let response;
         try {
           response = await fetch(url, { ...(sameOrigin
@@ -174,9 +187,32 @@ export async function fetchImageBlob(filename, options = {}) {
           throw new Error("图片读取失败，请检查网络连接后重试。");
         }
         if (!content.size) throw new Error("图片内容为空，请重新加载。");
+        if (upstream && filename.toLowerCase().endsWith(".png")) {
+          const signature = new Uint8Array(await content.slice(0, 8).arrayBuffer());
+          if (![137, 80, 78, 71, 13, 10, 26, 10].every((value, index) => signature[index] === value)) {
+            throw new Error("上游图片格式暂不可用，正在尝试本站备份。");
+          }
+        }
         return content;
-      }, IMAGE_READ_TIMEOUT_MS, "原图读取超时，请检查网络连接后重试。");
-      if (!blob) continue;
+      }, upstream ? 8000 : IMAGE_READ_TIMEOUT_MS, "原图读取超时，请检查网络连接后重试。");
+      } catch (reason) {
+        if (upstream && attempt === 0) { useBackup = true; continue; }
+        if (!options.authenticated || options.variant === "thumbnail") throw reason;
+        // Only a failed direct read uses Function bandwidth. The relay is
+        // authenticated and chunked below the hosting response-size limit.
+        try {
+          blob = await readImageRelay(filename, { ...CLIENT_HEADERS, ...options.headers }, withImageTimeout);
+        } catch {
+          // Keep the original actionable error (and timeout code); never expose
+          // a raw transport exception, signed URL, or relay implementation detail.
+          throw reason;
+        }
+      }
+      if (!blob) {
+        if (attempt === 0) { if (upstream) useBackup = true; continue; }
+        if (!options.authenticated || options.variant === "thumbnail") throw new Error("图片访问未完成，请重新登录后重试。");
+        blob = await readImageRelay(filename, { ...CLIENT_HEADERS, ...options.headers }, withImageTimeout);
+      }
       if (cacheable && epoch === cacheEpoch && blob.size <= MAX_IMAGE_CACHE_BYTES) {
         for (const [entryKey, entry] of imageBlobs) {
           if (entryKey === key || entry.expiresAt <= Date.now()) {
@@ -204,15 +240,7 @@ export async function fetchImageBlob(filename, options = {}) {
 }
 
 export async function downloadImage(filename, options = {}) {
-  const blob = await fetchImageBlob(filename, options);
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+  return saveBrowserFile(filename, () => fetchImageBlob(filename, options));
 }
 
 export async function recoverGeneration(requestId, { attempts = 10, intervalMs = 2000, headers = {} } = {}) {

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cleanPromptHistory, GUEST_HISTORY_KEY, HISTORY_WINDOW_MS, readGuestPrompts, rememberGuestPrompt } from "../src/lib/promptHistory.js";
+import { cleanPromptHistory, GUEST_HISTORY_KEY, HISTORY_WINDOW_MS, HISTORY_PREVIEW_WINDOW_MS, readGuestPrompts, rememberGuestPrompt } from "../src/lib/promptHistory.js";
 
 const now = Date.parse("2026-10-21T12:00:00Z");
 const row = { id: "one", prompt: "中文提示词\n第二行", created_at: new Date(now).toISOString() };
@@ -12,6 +12,14 @@ test("history has only text, identity and time fields, never image/reference/key
 test("seven-day cutoff excludes expired, malformed, future and duplicate records", () => {
   const entries = [row, row, { ...row, id: "old", created_at: new Date(now-HISTORY_WINDOW_MS).toISOString() }, { ...row, id: "future", created_at: new Date(now+1).toISOString() }, { ...row, id: "invalid", created_at: "invalid" }, { ...row, id: "empty", prompt: "  " }];
   assert.deepEqual(cleanPromptHistory(entries, now), [row]);
+});
+
+test("thumbnail metadata expires after twelve hours while text remains for seven days", () => {
+  const entry = { ...row, preview_count: 2, preview_expires_at: new Date(now+HISTORY_PREVIEW_WINDOW_MS).toISOString(), image_keys: ["private.png"], previews: [{url:"https://private.invalid/image"}], api_key:"private" };
+  assert.deepEqual(cleanPromptHistory([entry], now), [{...row, preview_count:2, preview_expires_at:entry.preview_expires_at}]);
+  assert.deepEqual(cleanPromptHistory([entry], now+HISTORY_PREVIEW_WINDOW_MS), [row]);
+  assert.deepEqual(cleanPromptHistory([{...entry, preview_expires_at:new Date(now+HISTORY_PREVIEW_WINDOW_MS+1).toISOString()}], now), [row]);
+  assert.deepEqual(cleanPromptHistory([{...entry, preview_count:999}], now), [row]);
 });
 test("guest records persist and expired text is physically pruned on access", () => {
   const values = new Map();

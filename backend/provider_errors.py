@@ -2,6 +2,10 @@
 
 import json
 import re
+try:
+    from backend.generation_failures import is_timeout, IMAGE_TIMEOUT, IMAGE_TIMEOUT_RECOVERY
+except ModuleNotFoundError:
+    from generation_failures import is_timeout, IMAGE_TIMEOUT, IMAGE_TIMEOUT_RECOVERY
 
 
 PLATFORM_FAILURE_DETAIL = "一般为以下原因：\n1.提示词有模型不支持的参数或违规用词触发审核拒绝\n2.余额不足\n3.高峰期使用人数过多"
@@ -54,6 +58,10 @@ def _identifier(value, provider):
 
 
 def describe_provider_rejection(payload, status, provider, headers=None, prompt=""):
+    if is_timeout(payload, status):
+        return {'code': 'IMAGE_PROVIDER_TIMEOUT', 'message': '图片生成服务响应超时',
+                'detail': IMAGE_TIMEOUT, 'recovery': IMAGE_TIMEOUT_RECOVERY,
+                'status': 504, 'upstream_error': {'message': IMAGE_TIMEOUT, 'http_status': 504}}
     layers = _layers(payload if isinstance(payload, dict) else {})
     message = ""
     for layer in reversed(layers):

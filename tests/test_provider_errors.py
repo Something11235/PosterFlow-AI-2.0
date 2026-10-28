@@ -27,6 +27,14 @@ class ProviderRejectionTests(unittest.TestCase):
                 self.assertEqual(result["upstream_error"]["request_id"], "synthetic-request")
                 self.assertNotIn("Key", " / ".join(result["recovery"]))
 
+    def test_upstream_gateway_timeout_is_translated_instead_of_content_rejection(self):
+        raw='all channels failed. Last error: HTTP 504: '+json.dumps({'title':'Error 504: Gateway time-out','zone':'private.invalid','ray_id':'private-ray'})
+        result=describe_provider_rejection({'error':{'message':raw}},502,self.provider)
+        self.assertEqual(result['code'],'IMAGE_PROVIDER_TIMEOUT')
+        self.assertIn('超时',result['detail']);self.assertNotIn('违规',result['detail'])
+        self.assertIn('2 分钟',' '.join(result['recovery']))
+        self.assertNotIn('private.invalid',json.dumps(result));self.assertNotIn('private-ray',json.dumps(result))
+
     def test_nested_error_json_keeps_the_specific_message_without_inferring_a_category(self):
         payload = {"error": {"message": json.dumps({"error": {"code": "content_policy_violation", "message": "Rejected by the safety system."}})}}
         result = describe_provider_rejection(payload, 400, self.provider)

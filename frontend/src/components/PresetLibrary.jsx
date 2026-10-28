@@ -274,8 +274,8 @@ export default function PresetLibrary({ activePresetId, onApplyPreset }) {
               </button>
               {preset.source === "custom" && (
                 <div className="flex justify-end gap-1 border-t border-border-subtle px-2 py-1.5">
-                  <button type="button" onClick={() => openEdit(preset)} className="flex min-h-8 min-w-8 items-center justify-center rounded-md text-text-muted transition hover:bg-bg-elevated hover:text-text-primary" aria-label={`编辑${preset.name}`} title="编辑预设"><Pencil size={13} /></button>
-                  <button type="button" onClick={() => handleDelete(preset)} className="flex min-h-8 min-w-8 items-center justify-center rounded-md text-text-muted transition hover:bg-error/10 hover:text-error" aria-label={`删除${preset.name}`} title="删除预设"><Trash2 size={13} /></button>
+                  <button type="button" onClick={() => openEdit(preset)} className="flex min-h-10 min-w-10 items-center justify-center gap-1.5 rounded-md px-2 text-xs text-text-muted transition hover:bg-bg-elevated hover:text-text-primary" aria-label={`编辑${preset.name}`} title="编辑预设"><Pencil size={13} />编辑</button>
+                  <button type="button" onClick={() => handleDelete(preset)} className="flex min-h-10 min-w-10 items-center justify-center gap-1.5 rounded-md px-2 text-xs text-text-muted transition hover:bg-error/10 hover:text-error" aria-label={`删除${preset.name}`} title="删除预设"><Trash2 size={13} />删除</button>
                 </div>
               )}
             </article>

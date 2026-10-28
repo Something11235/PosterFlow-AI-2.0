@@ -1,10 +1,8 @@
+import { PROMPT_RESOURCES } from "../lib/promptResources";
 import React from "react";
 import { BookOpen, ChevronDown, ExternalLink } from "lucide-react";
 
-const LINKS = [
-  { label: "GPT Image 2 提示词库", href: "https://gpt-image2.canghe.ai/" },
-  { label: "GPT Image 2 灵感社区", href: "https://awesome.gptimage2.asia/" },
-];
+const LINKS = PROMPT_RESOURCES;
 
 export default function PromptReferences() {
   return <details className="studio-prompt-library">

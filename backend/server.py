@@ -42,10 +42,12 @@ from flask import Flask, g, jsonify, make_response, redirect, render_template, r
 from flask_cors import CORS
 
 try:
-    from backend.prompt_history import HISTORY_DAYS, HISTORY_PAGE_SIZE, history_cursor, parse_history_cursor
+    from backend.prompt_history import HISTORY_DAYS, HISTORY_PAGE_SIZE, HISTORY_PREVIEW_HOURS, history_cursor, parse_history_cursor, history_preview_metadata, history_preview_expiry, video_history_parameters
     from backend.provider_errors import describe_provider_rejection
     from backend.password_recovery import password_recovery
     from backend.image_preview import create_image_preview, preview_filename
+    from backend.credits import credit_amount, credit_text
+    from backend.admin_multimedia import enrich_overview
     from backend.supabase_service import (
         AuthenticatedUser,
         SupabaseError,
@@ -56,10 +58,12 @@ try:
     )
     from backend.payment_service import PaymentError, configured_payment_channels, create_checkout, parse_alipay_callback, parse_wechat_callback
 except ModuleNotFoundError:  # Allows `python backend/server.py` in local development.
-    from prompt_history import HISTORY_DAYS, HISTORY_PAGE_SIZE, history_cursor, parse_history_cursor
+    from prompt_history import HISTORY_DAYS, HISTORY_PAGE_SIZE, HISTORY_PREVIEW_HOURS, history_cursor, parse_history_cursor, history_preview_metadata, history_preview_expiry, video_history_parameters
     from provider_errors import describe_provider_rejection
     from password_recovery import password_recovery
     from image_preview import create_image_preview, preview_filename
+    from credits import credit_amount, credit_text
+    from admin_multimedia import enrich_overview
     from supabase_service import (
         AuthenticatedUser,
         SupabaseError,
@@ -157,6 +161,10 @@ CORS(
         "X-Music-Endpoint",
         "X-Music-Query-Template",
         "X-Music-Auth-Type",
+        "X-Video-Api-Key",
+        "X-Video-Model",
+        "X-Video-Endpoint",
+        "X-Video-Query-Template",
         "X-Provider-Endpoint",
         "X-Provider-Model",
         "X-Provider-Auth-Type",
@@ -215,7 +223,7 @@ def storage_scope_name():
 
 def current_client_id():
     candidate = request.headers.get("X-Client-Id", "").strip() or request.args.get("client_id", "").strip()
-    if CLIENT_ID_PATTERN.fullmatch(candidate):
+    if CLIENT_ID_PATTERN.fullmatch(candidate) and not candidate.lower().startswith("user-"):
         return candidate
     return "local-user"
 
@@ -454,7 +462,7 @@ def _supabase_storage_request(method, path, **kwargs):
             method,
             _supabase_storage_url(path),
             headers={**_supabase_storage_headers(), **kwargs.pop("headers", {})},
-            timeout=60,
+            timeout=kwargs.pop("timeout", 60),
             **kwargs,
         )
     except requests.RequestException as exc:
@@ -545,7 +553,7 @@ def _supabase_create_signed_url(pathname, expires_in=3600):
         "POST",
         f"/object/sign/{_supabase_object_path(pathname)}",
         headers={"Content-Type": "application/json"},
-        json={"expiresIn": max(60, min(int(expires_in), 86400))},
+        json={"expiresIn": max(1, min(int(expires_in), 86400))},
     )
     try:
         payload = response.json()
@@ -1758,12 +1766,74 @@ def prompt_history():
         except ValueError as exc:
             raise ProviderError("HISTORY_CURSOR_INVALID", "历史记录分页无效，请刷新后重试", 400) from exc
         cutoff = datetime.now(timezone.utc) - timedelta(days=HISTORY_DAYS)
-        rows = SupabaseGateway().prompt_history(user.id, cutoff.isoformat(), cursor, HISTORY_PAGE_SIZE + 1)
+        gateway = SupabaseGateway()
+        rows = gateway.prompt_history(user.id, cutoff.isoformat(), cursor, HISTORY_PAGE_SIZE + 1)
         page = rows[:HISTORY_PAGE_SIZE]
-        # Explicit allowlist: no image keys, URLs, provider host, or credentials.
-        entries = [{"id": row["id"], "prompt": row["prompt"], "created_at": row["created_at"]} for row in page]
+        # Page metadata contains only preview counts/expiry, never media URLs.
+        entries = [{"id": row["id"], "prompt": row["prompt"], "created_at": row["created_at"],
+                    **({"kind": "music", "parameters": {key: value for key, value in (row.get("parameters") or {}).items()
+                         if key in {"model", "version", "parameter_format", "custom", "instrumental", "prompt", "sound_prompt", "lyrics", "title", "style", "negative_tags", "operation"} and isinstance(value, (str, bool))}}
+                       if row.get("kind") == "music" else {"kind": "video", "parameters": video_history_parameters(row.get("parameters"))}
+                       if row.get("kind") == "video" else {})} for row in page]
+        now = datetime.now(timezone.utc)
+        preview_ids = [entry["id"] for entry in entries if entry.get("kind") not in {"music", "video"}
+                       and history_preview_expiry(entry["created_at"], now)]
+        previews_unavailable = False
+        if preview_ids:
+            try:
+                previews = gateway.history_preview_jobs(user.id, preview_ids, (now - timedelta(hours=HISTORY_PREVIEW_HOURS)).isoformat())
+                by_id = {row["id"]: history_preview_metadata(row, now) for row in previews}
+                for entry in entries:
+                    preview = by_id.get(entry["id"]) if entry.get("kind") not in {"music", "video"} else None
+                    if preview:
+                        entry.update(preview_count=len(preview["filenames"]), preview_expires_at=preview["expires_at"])
+            except SupabaseError:
+                previews_unavailable = True
         response = jsonify({"success": True, "entries": entries, "retention_days": HISTORY_DAYS,
+                            "preview_retention_hours": HISTORY_PREVIEW_HOURS, "previews_unavailable": previews_unavailable,
                             "next_cursor": history_cursor(page[-1]) if len(rows) > HISTORY_PAGE_SIZE else None})
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Vary"] = "Authorization, Cookie"
+        return response
+    except (ProviderError, SupabaseError) as error:
+        return provider_error_response(as_provider_error(error))
+
+
+@app.route("/api/history/<job_id>/previews", methods=["GET"])
+def prompt_history_previews(job_id):
+    try:
+        user = require_authenticated_user()
+        try:
+            job_id = str(uuid.UUID(job_id))
+        except (ValueError, TypeError):
+            raise ProviderError("HISTORY_PREVIEW_INVALID", "预览记录无效，请刷新历史记录", 400) from None
+        enforce_rate_limit("history-preview", user.id, 60, 60)
+        now = datetime.now(timezone.utc)
+        rows = SupabaseGateway().history_preview_jobs(user.id, [job_id], (now - timedelta(hours=HISTORY_PREVIEW_HOURS)).isoformat())
+        metadata = history_preview_metadata(rows[0], now) if rows and rows[0].get("id") == job_id else None
+        if not metadata:
+            raise ProviderError("HISTORY_PREVIEW_UNAVAILABLE", "预览已过期或暂不可用，提示词仍可使用。", 404)
+        expires = datetime.fromisoformat(metadata["expires_at"])
+        ttl = min(300, int((expires - now).total_seconds()))
+        if ttl < 1:
+            raise ProviderError("HISTORY_PREVIEW_UNAVAILABLE", "预览已过期，提示词仍可使用。", 404)
+        previews = []
+        for filename in metadata["filenames"]:
+            thumbnail = preview_filename(filename)
+            try:
+                if _storage_backend() == "supabase":
+                    url = _supabase_create_signed_url(_image_blob_path(thumbnail), expires_in=ttl)
+                else:
+                    folder = SAVE_FOLDER if storage_scope_name() == "local-user" else os.path.join(SAVE_FOLDER, storage_scope_name())
+                    if not os.path.isfile(os.path.join(folder, thumbnail)):
+                        continue
+                    url = "/api/images/" + quote(thumbnail, safe="")
+                previews.append({"url": url, "variant": "thumbnail", "filename": filename})
+            except ProviderError:
+                # Missing previews never fall back to, or recreate from, originals.
+                continue
+        response = jsonify(success=True, previews=previews, expires_at=metadata["expires_at"],
+                           max_edge=512, retention_hours=HISTORY_PREVIEW_HOURS, url_ttl_seconds=ttl)
         response.headers["Cache-Control"] = "private, no-store"
         response.headers["Vary"] = "Authorization, Cookie"
         return response
@@ -1795,7 +1865,14 @@ def admin_console():
         if from_date > to_date or to_date > today or (to_date - from_date).days > 89:
             raise ProviderError("METRICS_DATE_INVALID", "统计日期范围无效", 400, "请选择今天之前且不超过 90 天的日期范围。")
         snapshot = gateway.admin_console_snapshot(from_date, to_date, request.args.get("search", ""), 100)
-        return jsonify({"success": True, "from": from_date.isoformat(), "to": to_date.isoformat(), **snapshot})
+        try:
+            snapshot["music"] = enrich_overview(gateway.admin_music_overview(from_date, to_date, request.args.get("search", ""), 100))
+        except SupabaseError:
+            snapshot["music_error"] = "音乐、视频与活跃统计暂时不可用，请刷新重试。其他管理功能仍可使用。"
+        response = jsonify({"success": True, "from": from_date.isoformat(), "to": to_date.isoformat(), **snapshot})
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Vary"] = "Authorization, Cookie"
+        return response
     except (ProviderError, SupabaseError) as error:
         return provider_error_response(as_provider_error(error))
 
@@ -2028,14 +2105,14 @@ def admin_adjust_credits():
         data = request.get_json(silent=True) or {}
         user_id = str(data.get("user_id", "")).strip()
         try:
-            delta = int(data.get("delta"))
-        except (TypeError, ValueError) as exc:
-            raise ProviderError("CREDIT_DELTA_INVALID", "积分调整数量无效", 400, "请输入不为 0 的整数积分。") from exc
-        if not user_id or not -100000 <= delta <= 100000 or delta == 0:
-            raise ProviderError("CREDIT_DELTA_INVALID", "积分调整数量无效", 400, "请输入 -100000 到 100000 之间且不为 0 的整数积分。")
+            delta = credit_amount(data.get("delta"), allow_zero=False)
+        except ValueError as exc:
+            raise ProviderError("CREDIT_DELTA_INVALID", "积分调整数量无效", 400, "请输入不为 0、最多四位小数的积分。") from exc
+        if not user_id:
+            raise ProviderError("CREDIT_DELTA_INVALID", "请选择需要调整积分的用户。", 400)
         reason = str(data.get("reason", "")).strip()[:240]
         idempotency_key = str(data.get("idempotency_key", "")).strip() or f"admin:{uuid.uuid4()}"
-        result = raise_for_rpc_result(gateway.admin_adjust_credits(user.id, user_id, delta, reason, idempotency_key))
+        result = raise_for_rpc_result(gateway.admin_adjust_credits(user.id, user_id, credit_text(delta), reason, idempotency_key))
         return jsonify({"success": True, **result})
     except (ProviderError, SupabaseError) as error:
         return provider_error_response(as_provider_error(error))
@@ -2390,11 +2467,31 @@ def redirect_to_stored_image(filename, *, download=False):
 def image_url(filename):
     """Authorize access, then let the browser read the private object directly."""
     try:
-        set_optional_storage_scope()
+        user = set_optional_storage_scope()
         safe_name = os.path.basename(filename)
         variant = request.args.get("variant", "original")
         if variant not in {"original", "thumbnail"}:
             raise ProviderError("IMAGE_VARIANT_INVALID", "图片类型无效", 400)
+        source = request.args.get("source", "auto")
+        if source not in {"auto", "backup"}:
+            raise ProviderError("IMAGE_SOURCE_INVALID", "图片读取方式无效", 400)
+        if user and variant == "original" and source == "auto" and _storage_backend() == "supabase":
+            try:
+                try:
+                    from backend.image_delivery import preferred_original
+                except ModuleNotFoundError:
+                    from image_delivery import preferred_original
+                preferred = preferred_original(SupabaseGateway(), "user-" + user.id, safe_name, os.getenv("APIMART_IMAGE_API_KEY", "").strip())
+                if preferred:
+                    response = jsonify(success=True, **preferred)
+                    response.headers["Cache-Control"] = "private, no-store"
+                    response.headers["Vary"] = "Authorization, Cookie"
+                    response.headers["Referrer-Policy"] = "no-referrer"
+                    return response
+            except Exception:
+                # Optional delivery lookup never changes jobs, billing, or backups.
+                # Do not log raw provider payloads or signed media URLs.
+                pass
         if _storage_backend() == "supabase":
             actual_variant = variant
             try:
@@ -2425,6 +2522,16 @@ def image_url(filename):
         return jsonify({"success": True, "url": f"/api/images/{quote(safe_name)}{query}", "direct": False})
     except (ProviderError, SupabaseError) as error:
         return provider_error_response(as_provider_error(error))
+
+
+@app.route("/api/images/<filename>/content", methods=["GET"])
+def image_content(filename):
+    try:
+        from backend.image_relay import image_content as relay
+    except ModuleNotFoundError:
+        from image_relay import image_content as relay
+    import sys
+    return relay(sys.modules[__name__], filename)
 
 
 @app.route("/api/download/<filename>", methods=["GET"])
@@ -2516,7 +2623,26 @@ try:
 except ModuleNotFoundError:
     from music_routes import create_music_blueprint
 
-app.register_blueprint(create_music_blueprint(require_authenticated_user, optional_authenticated_user, enforce_rate_limit, ALLOWED_ORIGINS))
+import sys as _music_sys
+try:
+    from backend.music_references import MusicReferences
+except ModuleNotFoundError:
+    from music_references import MusicReferences
+app.register_blueprint(create_music_blueprint(require_authenticated_user, optional_authenticated_user, enforce_rate_limit, ALLOWED_ORIGINS, MusicReferences(_music_sys.modules[__name__])))
+
+try:
+    from backend.video_routes import create_video_blueprint
+    from backend.video_references import VideoReferences
+except ModuleNotFoundError:
+    from video_routes import create_video_blueprint
+    from video_references import VideoReferences
+app.register_blueprint(create_video_blueprint(require_authenticated_user, enforce_rate_limit, ALLOWED_ORIGINS, VideoReferences(_music_sys.modules[__name__])))
+
+try:
+    from backend.credit_codes import create_credit_code_blueprint
+except ModuleNotFoundError:
+    from credit_codes import create_credit_code_blueprint
+app.register_blueprint(create_credit_code_blueprint(require_authenticated_user, require_admin_user, enforce_rate_limit, ALLOWED_ORIGINS, provider_error_response))
 
 try:
     from backend.apimart_image_routes import create_image_blueprint

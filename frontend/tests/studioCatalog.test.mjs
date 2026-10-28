@@ -6,17 +6,17 @@ import {
   IMAGE_MODELS, MODEL_CATALOG, MUSIC_MODELS, STUDIO_AREAS, VIDEO_MODELS,
 } from "../src/lib/studioCatalog.js";
 
-test("catalog follows the selected 7 image, 2 music and 5 video models in that order", () => {
+test("catalog follows the selected 6 image, 2 music and 9 video models in that order", () => {
   assert.deepEqual(STUDIO_AREAS.map(x => x.id), ["image", "music", "video"]);
-  assert.deepEqual(IMAGE_MODELS.map(x => x.name), ["GPT Image 2.5 Flare", "GPT Image 2.5 Sunburst", "GPT Image 2", "Nano Banana 2.1", "Nano Banana Pro", "grok-imagine-image-2.0", "grok-imagine-2.0-ext"]);
+  assert.deepEqual(IMAGE_MODELS.map(x => x.name), ["GPT Image 2.5 Flare", "GPT Image 2.5 Sunburst", "GPT Image 2", "Nano Banana 2.1", "Grok Imagine Image 2.0", "Grok Imagine 2.0 Ext"]);
   assert.deepEqual(MUSIC_MODELS.map(x => x.name), ["suno", "flowmusic"]);
-  assert.deepEqual(VIDEO_MODELS.map(x => x.name), ["wan3.0-video", "seedance-2.5", "seedance-2.0", "MiniMax-H3", "MiniMax-H3-Max"]);
-  assert.equal(MODEL_CATALOG.length, 14);
-  assert.deepEqual(MODEL_CATALOG.map(x => x.area), [...Array(7).fill("image"), ...Array(2).fill("music"), ...Array(5).fill("video")]);
+  assert.deepEqual(VIDEO_MODELS.map(x => x.name), ["Seedance 2.5", "Seedance 2.0", "Seedance 2.0 Fast", "Seedance 2.0 Mini", "Gemini Omni 1.1 Flash", "MiniMax H3", "MiniMax H3 Max", "Wan 3.0", "FLUX 3 Video"]);
+  assert.equal(MODEL_CATALOG.length, 17);
+  assert.deepEqual(MODEL_CATALOG.map(x => x.area), [...Array(6).fill("image"), ...Array(2).fill("music"), ...Array(9).fill("video")]);
   assert.equal(MODEL_CATALOG.some(x => x.docs || x.url), false);
 });
 test("video previews and unknown music models cannot produce request drafts", () => {
-  for (const model of VIDEO_MODELS) assert.throws(() => buildStudioDraft("video", { model: model.id, prompt: "海浪" }), /暂未开放/);
+  for (const model of VIDEO_MODELS.filter(x=>!x.available)) assert.throws(() => buildStudioDraft("video", { model: model.id, prompt: "海浪" }), /暂未开放/);
   const flow = buildStudioDraft("music", { model: "flowmusic", sound_prompt: "海浪" });
   assert.equal(flow.body.model, "flowmusic");
   assert.throws(() => buildStudioDraft("music", { ...defaultMusic(), model: "unknown", prompt: "海浪" }), /不支持/);

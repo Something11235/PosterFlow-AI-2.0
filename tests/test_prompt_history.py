@@ -13,6 +13,7 @@ class PromptHistoryTests(unittest.TestCase):
         self.gateway = Mock()
         self.row = {"id": "11111111-1111-4111-8111-111111111111", "prompt": "只返回提示词", "created_at": datetime.now(timezone.utc).isoformat(), "image_keys": ["private.png"], "provider": "private-host", "metadata": {"do_not_return": True}}
         self.gateway.prompt_history.return_value = [self.row]
+        self.gateway.history_preview_jobs.return_value = []
 
     def get(self, query=""):
         with patch.object(server, "require_authenticated_user", return_value=self.user), patch.object(server, "SupabaseGateway", return_value=self.gateway):
@@ -55,14 +56,29 @@ class PromptHistoryTests(unittest.TestCase):
         gateway = object.__new__(SupabaseGateway)
         cutoff = "2026-10-14T00:00:00+00:00"
         cursor = parse_history_cursor(history_cursor(self.row))
-        with patch.object(gateway, "_request", return_value=[]) as request:
+        with patch.object(gateway, "rpc", return_value=[]) as request:
             gateway.prompt_history("owner", cutoff, cursor)
-        params = request.call_args.kwargs["params"]
-        self.assertEqual(params["user_id"], "eq.owner")
-        self.assertEqual(params["select"], "id,prompt,created_at")
-        self.assertEqual(params["created_at"], "gt."+cutoff)
-        self.assertEqual(params["order"], "created_at.desc,id.desc")
-        self.assertIn("id.lt."+self.row["id"], params["or"])
+        self.assertEqual(request.call_args.args[0], "get_prompt_history")
+        params = request.call_args.args[1]
+        self.assertEqual(params, {"p_user_id": "owner", "p_cutoff": cutoff, "p_before": cursor[0], "p_before_id": self.row["id"], "p_limit": 51})
+
+    def test_music_history_never_returns_keys_endpoints_or_media(self):
+        self.gateway.prompt_history.return_value = [{**self.row, "kind": "music", "parameters": {"model": "flowmusic", "lyrics": "歌词", "sound_prompt": "爵士", "api_key": "private-secret", "endpoint": "https://private.invalid", "audio_url": "https://private.invalid/track"}}]
+        response = self.get()
+        item = response.json["entries"][0]
+        self.assertEqual(item["kind"], "music")
+        self.assertEqual(item["parameters"], {"model": "flowmusic", "lyrics": "歌词", "sound_prompt": "爵士"})
+        self.assertNotIn("private", response.get_data(as_text=True))
+
+    def test_video_history_is_whitelisted_and_does_not_query_image_previews(self):
+        self.gateway.prompt_history.return_value = [{**self.row, "kind": "video", "parameters": {
+            "model": "seedance-2.0-mini", "prompt": "镜头推进", "duration": 5, "resolution": "480p", "seed": 0,
+            "tools": [{"type":"web_search"}], "api_key": "private-secret", "video_urls": ["https://private.invalid/video"], "receipt":"private-proof"}}]
+        response=self.get();item=response.json["entries"][0]
+        self.assertEqual(item["kind"],"video");self.assertEqual(item["parameters"]["seed"],0)
+        self.assertEqual(item["parameters"]["tools"],[{"type":"web_search"}])
+        self.gateway.history_preview_jobs.assert_not_called()
+        self.assertNotIn("private",response.get_data(as_text=True))
 
 
 if __name__ == "__main__":

@@ -16,9 +16,9 @@ begin
  foreach m in array array['gemini-nano-banana-2.1','nano-banana-pro','grok-imagine-image-2.0','grok-imagine-2.0-ext'] loop
   req:=gen_random_uuid();token:=gen_random_uuid();
   v:=public.begin_apimart_image_job(o,u,req,'platform',m,1,repeat('a',64),'test prompt');
-  if (v->>'balance')::int<>100 then
+  if (v->>'balance')::numeric<>100 then
    -- First reservation starts at 100 and each completed iteration costs one.
-   if (v->>'balance')::int not between 96 and 99 then raise exception 'Wrong reservation';end if;
+   if (v->>'balance')::numeric not between 96 and 99 then raise exception 'Wrong reservation';end if;
   end if;
   j:=v->'job';gid:=(j->>'generation_job_id')::uuid;
   if (select reserved_credits from public.generation_jobs where id=gid)<>1 then raise exception 'New model must reserve one per image';end if;
@@ -37,7 +37,7 @@ begin
  v:=public.begin_apimart_image_job(o,u,req,'platform','gemini-nano-banana-2.1',4,repeat('b',64),'batch');
  gid:=(v->'job'->>'generation_job_id')::uuid;
  v:=public.begin_apimart_image_job(o,u,req,'platform','gemini-nano-banana-2.1',4,repeat('b',64),'batch');
- if v->>'existing'<>'true' or (v->>'balance')::int<>92 then raise exception 'Request charged twice';end if;
+ if v->>'existing'<>'true' or (v->>'balance')::numeric<>92 then raise exception 'Request charged twice';end if;
  v:=public.begin_apimart_image_job(o,u,req,'platform','gemini-nano-banana-2.1',4,repeat('c',64),'changed');
  if v->>'code'<>'IMAGE_REQUEST_CONFLICT' then raise exception 'Fingerprint conflict missed';end if;
  v:=public.apply_apimart_image_job(o,req,'submission_unknown');
@@ -56,7 +56,7 @@ begin
  if v->'job'->>'status'<>'processing' then raise exception 'Save retry lost task';end if;
  v:=public.apply_apimart_image_job(o,req,'claim',null,'[]',other);
  v:=public.apply_apimart_image_job(o,req,'completed',null,'["one.png","two.png"]',other);
- if (v->>'balance')::int<>94 then raise exception 'Partial result must charge 2 and refund 2';end if;
+ if (v->>'balance')::numeric<>94 then raise exception 'Partial result must charge 2 and refund 2';end if;
  v:=public.apply_apimart_image_job('different-owner',req,'failed');
  if v->>'code'<>'IMAGE_TASK_NOT_FOUND' then raise exception 'Cross owner lookup leak';end if;
  req:=gen_random_uuid();

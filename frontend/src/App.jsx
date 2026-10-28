@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   Activity,
   Copy,
@@ -10,19 +10,22 @@ import {
   WandSparkles,
 } from "lucide-react";
 import Gallery from "./components/Gallery";
-import ApimartImageTasks from "./components/ApimartImageTasks";
-import { imageGenerationFetch } from "./lib/apimartImages";
+import ImageTaskQueue from "./components/ImageTaskQueue";
+import { createImageTaskStore, IMAGE_TASK_LIMIT, referenceCapability } from "./lib/imageTasks";
+import { imageGenerationFetch, readImageTask } from "./lib/apimartImages";
 import ImageModal from "./components/ImageModal";
 import AuthModal from "./components/AuthModal";
 import AccountPanel from "./components/AccountPanel";
 import AnnouncementBanner from "./components/AnnouncementBanner";
 import AdminMetricsPanel from "./components/AdminMetricsPanel";
 import RechargePanel from "./components/RechargePanel";
+import CommunityQrModal from "./components/CommunityQrModal";
 import PromptHistoryPanel from "./components/PromptHistoryPanel";
 import { rememberGuestPrompt } from "./lib/promptHistory";
 import ParameterPanel from "./components/ParameterPanel";
 import PromptEditor from "./components/PromptEditor";
 import PresetLibrary from "./components/PresetLibrary";
+import { companionFile } from "./lib/aiCompanions";
 import ProviderSettings from "./components/ProviderSettings";
 import Sidebar from "./components/Sidebar";
 import StudioNavigation from "./components/studio/StudioNavigation";
@@ -40,6 +43,7 @@ import {
 } from "./lib/provider";
 import { CLIENT_HEADERS, clearImageUrlCache, downloadImage, recoverGeneration } from "./lib/client";
 import { createImageArchive } from "./lib/batchDownload";
+import { saveBrowserFile } from "./lib/browserSave";
 import { DEFAULT_PRESET } from "./lib/presets";
 import { cleanupReferencePaths, uploadReferenceFiles } from "./lib/referenceUpload";
 import { appendReferenceFiles, removeReferenceMentions } from "./lib/referenceSelection";
@@ -76,6 +80,7 @@ function normalizeApiError(data, fallback = DEFAULT_ERROR) {
     return {
       message: "无法连接图片生成服务",
       code: data?.code || "PROVIDER_NETWORK_BLOCKED",
+      submission_unknown: Boolean(data?.submission_unknown),
       upstream_error: data?.upstream_error,
       detail:
         data?.detail ||
@@ -91,6 +96,7 @@ function normalizeApiError(data, fallback = DEFAULT_ERROR) {
   return {
     message: rawMessage || fallback.message,
     code: data?.code || fallback.code,
+    submission_unknown: Boolean(data?.submission_unknown),
     detail: data?.detail || fallback.detail,
     recovery: data?.recovery || fallback.recovery,
     upstream_error: data?.upstream_error,
@@ -164,8 +170,13 @@ export default function App() {
 
   const [images, setImages] = useState([]);
   const [currentPrompt, setCurrentPrompt] = useState("");
-  const [isGenerating, setIsGenerating] = useState(false);
+  const selectedTaskRef = useRef("");
+  const [musicActiveCount, setMusicActiveCount] = useState(0);
+  const [videoActiveCount, setVideoActiveCount] = useState(0);
+  const [videoHistoryRestore, setVideoHistoryRestore] = useState(null);
+  const [musicHistoryRestore, setMusicHistoryRestore] = useState(null);
   const [isExporting, setIsExporting] = useState(false);
+  const [downloadError, setDownloadError] = useState(null);
   const [downloadingImages, setDownloadingImages] = useState(new Set());
   const downloadingImagesRef = useRef(new Set());
   const [error, setError] = useState(null);
@@ -183,12 +194,24 @@ export default function App() {
   const [account, setAccount] = useState(null);
   const [accountLoading, setAccountLoading] = useState(false);
   const sessionRef = useRef(null);
+  const imageTaskStore = useMemo(() => createImageTaskStore(IMAGE_TASK_LIMIT, session?.user?.id || "guest"), [session?.user?.id]);
+  const imageTaskStoreRef = useRef(imageTaskStore);
+  imageTaskStoreRef.current = imageTaskStore;
+  const imageTasks = useSyncExternalStore(imageTaskStore.subscribe, imageTaskStore.getSnapshot);
+  const imageActiveCount = imageTasks.filter(task => task.active).length;
+  const isGenerating = Boolean(imageTasks.find(task => task.id === selectedTaskRef.current)?.active);
+  useEffect(() => {
+    selectedTaskRef.current = "";
+    setImages([]); setCurrentPrompt(""); setError(null); setSelectedImages(new Set());
+  }, [imageTaskStore]);
+
   const accountRequestRef = useRef(0);
   const [authOpen, setAuthOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [metricsOpen, setMetricsOpen] = useState(false);
   const [rechargeOpen, setRechargeOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [communityOpen, setCommunityOpen] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -321,11 +344,13 @@ export default function App() {
   }, [notice]);
 
   const modeMeta = MODE_META[mode];
-  const sizeInfo = stylesData.sizes?.[size];
   const selectedCount = selectedImages.size;
   const hasBrowserProvider = isProviderConfigComplete(providerConfig);
   const activeImageModel = billingMode === "platform" ? platformModel : providerConfig.model;
   const apimartSpec = apimartImageModel(activeImageModel);
+  const referenceSpec = referenceCapability(apimartSpec);
+  const materialReferenceSpec = useRef(referenceSpec);
+  materialReferenceSpec.current = referenceSpec;
   const platformReady = Boolean((apimartSpec ? apimartConfigured : serverProvider.platformConfigured) && session);
   const providerConfigured = billingMode === "platform" ? platformReady : hasBrowserProvider;
   useEffect(() => {
@@ -337,7 +362,7 @@ export default function App() {
   useEffect(() => {
     if (!apimartSpec) return;
     setCount(previous => Math.min(previous, apimartSpec.maxCount));
-    setImageResolution(previous => apimartSpec.resolutions.includes(previous) ? previous : apimartSpec.resolutions[0]);
+    if (!apimartSpec.automaticResolution) setImageResolution(previous => apimartSpec.resolutions.includes(previous) ? previous : apimartSpec.resolutions[0]);
   }, [apimartSpec]);
   // 平台积分模式不向用户暴露实际中转站/服务商域名；自带 Key 模式仍显示用户自己的配置。
   const providerName = billingMode === "platform" ? "平台图片服务" : getProviderDisplayName(providerConfig, serverProvider.host);
@@ -355,21 +380,13 @@ export default function App() {
     [authHeaders, billingMode],
   );
 
-  const updateCreditBalance = useCallback((balance) => {
-    if (balance === undefined || balance === null) return;
-    setAccount((current) => {
-      if (!current) return current;
-      return { ...current, credits: { ...(current.credits || {}), balance } };
-    });
-  }, []);
-
   const requireGenerationAccess = useCallback(() => {
     if (billingMode === "platform" && !session) {
       setAuthOpen(true);
       setNotice("请先登录，完成邮箱验证后即可领取注册赠送积分");
       return false;
     }
-    if (billingMode === "platform" && !serverProvider.platformConfigured) {
+    if (billingMode === "platform" && !(apimartSpec ? apimartConfigured : serverProvider.platformConfigured)) {
       setShowProviderSettings(true);
       setError({
         message: "平台积分服务尚未配置",
@@ -390,22 +407,7 @@ export default function App() {
       return false;
     }
     return true;
-  }, [billingMode, hasBrowserProvider, serverProvider.configured, serverProvider.platformConfigured, session]);
-
-  const workspaceStats = useMemo(() => {
-    if (mode === "canvas") {
-      return [
-        { label: "存储", value: "当前浏览器" },
-        { label: "可用素材", value: `${images.length} 张` },
-        { label: "画布", value: "自动保存" },
-      ];
-    }
-    return [
-      { label: "画幅", value: sizeInfo ? sizeInfo.label : "由提示词决定" },
-      { label: "预设", value: activePreset?.name || "自由创作" },
-      { label: "批量", value: `${count} 张` },
-    ];
-  }, [activePreset, count, images.length, mode, sizeInfo]);
+  }, [apimartSpec, apimartConfigured, billingMode, hasBrowserProvider, serverProvider.configured, serverProvider.platformConfigured, session]);
 
   const handleAddToCanvas = useCallback((filenames) => {
     const uniqueFilenames = [...new Set(filenames.filter(Boolean))];
@@ -426,8 +428,8 @@ export default function App() {
   }, []);
 
   const handleReferenceAdd = useCallback((files) => {
-    if (!files.length) return;
-    const result = appendReferenceFiles(referenceFilesRef.current, files);
+    if (!files.length || referenceSpec.disabled) return;
+    const result = appendReferenceFiles(referenceFilesRef.current, files, referenceSpec.limit);
     referenceFilesRef.current = result.files;
     setReferenceFiles(result.files);
     const messages = [];
@@ -437,7 +439,7 @@ export default function App() {
     if (result.unsupported) messages.push(`${result.unsupported} 张格式不支持或无法识别，请使用 PNG、JPG、WebP 或 GIF`);
     if (result.overflow) messages.push(`最多保留 ${MAX_REFERENCE_IMAGES} 张，另外 ${result.overflow} 张未添加`);
     setReferenceFeedback({ text: messages.join("；"), warning: Boolean(result.oversized || result.unsupported || result.overflow) });
-  }, []);
+  }, [referenceSpec.disabled, referenceSpec.limit]);
 
   const handleReferenceRemove = useCallback((index) => {
     const current = referenceFilesRef.current;
@@ -463,203 +465,115 @@ export default function App() {
     setNotice(`已载入预设：${preset.name}`);
   }, []);
 
-  const handleGenerate = useCallback(async () => {
-    if (!prompt.trim()) {
-      setError({
-        message: "请输入提示词后再生成",
-        code: "PROMPT_REQUIRED",
-        detail: "生成图片需要先填写主体、场景、风格或选择一个预设模板。",
-        recovery: ["填写提示词", "选择预设模板", "重新生成"],
-      });
-      return;
+  const importCompanion = useCallback(async (id, target) => {
+    const owner = sessionRef.current?.user?.id || "guest";
+    const file = typeof id === "string" ? await companionFile(id) : id;
+    if (!(file instanceof File)) throw new Error("请选择有效的图片素材。");
+    if (owner !== (sessionRef.current?.user?.id || "guest")) throw new Error("账户已切换，请重新选择素材。");
+    if (target === "reference") {
+      const spec = materialReferenceSpec.current;
+      if (spec.disabled) throw new Error("当前图片模型不支持参考图，请先到图像创作切换支持参考图的模型。");
+      const result = appendReferenceFiles(referenceFilesRef.current, [file], spec.limit);
+      if (result.overflow) throw new Error(`当前模型最多支持 ${spec.limit} 张参考图，请先移除部分图片。`);
+      if (!result.added && !result.duplicates) throw new Error("素材未能加入参考图，请重试。");
+      referenceFilesRef.current = result.files;setReferenceFiles(result.files);
+      setReferenceFeedback({ text: result.duplicates ? "这张 AI娘图片已在参考图列表中。" : "已加入 AI娘参考图，可在提示词中使用 @图 引用。", warning: false });
+      setMode("create");setStudioArea("image");setNotice("AI娘图片已加入参考图。");
+    } else if (target === "canvas") {
+      setPendingCanvasImport({ id: crypto.randomUUID(), files: [file] });
+      setStudioArea("image");setMode("canvas");setNotice("正在把 AI娘图片加入无限画布…");
+    } else throw new Error("请选择参考图或无限画布。");
+  }, []);
+
+  const runImageTask = useCallback(async (taskPrompt, previousImage = null) => {
+    if (!taskPrompt.trim() || Array.from(taskPrompt.trim()).length > 6000) {
+      setError({ message: "提示词须为 1–6000 个字符", code: "PROMPT_INVALID" }); return;
     }
     if (!requireGenerationAccess()) return;
-    if (!providerConfigured) {
-      setShowProviderSettings(true);
-      setNotice("请先配置图片服务");
-      return;
+    if (!providerConfigured) { setShowProviderSettings(true); return; }
+    if (previousImage && referenceSpec.disabled) {
+      setNotice("当前模型仅支持文生图，请切换到 AI 创作或选择支持参考图的模型。"); return;
     }
-    const previousImages = images;
-    const requestId = createRequestId();
-    const imageRequestOwner = session?.user?.id || "guest";
-    setError(null);
-    setNotice("");
-    setIsGenerating(true);
-    setImages([]);
-    setSelectedImages(new Set());
-    let referenceStoragePaths = [];
-    let generationRequestStarted = false;
-
+    if (!referenceSpec.disabled && !previousImage && referenceFiles.length > referenceSpec.limit) {
+      setNotice(`当前模型最多支持 ${referenceSpec.limit} 张参考图，请先移除多余素材。`); return;
+    }
+    const requestId = createRequestId(), store = imageTaskStore;
+    if (!store.start(requestId, { prompt: taskPrompt.trim(), model: activeImageModel, billingMode })) {
+      setNotice("已有 3 个生图任务正在运行，完成一个后可继续提交。"); return;
+    }
+    selectedTaskRef.current = requestId;
+    setError(null); setNotice("任务已开始，可修改提示词继续提交，或切换到音乐创作。");
+    setImages([]); setSelectedImages(new Set()); setCurrentPrompt(taskPrompt.trim());
+    const live = () => imageTaskStoreRef.current === store;
+    const selected = () => live() && selectedTaskRef.current === requestId;
+    const show = data => {
+      store.finish(requestId, { images: data.images || [], prompt: data.prompt || taskPrompt });
+      if (selected()) { setImages(data.images || []); setCurrentPrompt(data.prompt || taskPrompt); setError(null); }
+    };
+    if (apimartSpec) store.registerRecovery(requestId, async () => {
+      const data = await readImageTask(requestId, providerHeaders);
+      if (!live()) return;
+      if (data.job?.status === "completed") show(data);
+      else if (data.job?.status === "failed") {
+        store.finish(requestId, { error: { message: "本次任务未完成，预留积分已按实际结果处理。", billing_mode: billingMode } });
+      } else setNotice("原任务仍在处理中，可以稍后再次查询；不会重新生图。");
+      await refreshAccount();
+    });
+    let paths = [], started = false;
     try {
-      const redrawFromPrevious = mode === "iterative" && previousImages.length > 0;
-      const body = redrawFromPrevious
-        ? {
-            prompt: prompt.trim(),
-            previous_image: previousImages[0].filename,
-            ...(size ? { size } : {}),
-            ...(size === "custom" ? { custom_width: customSize.width, custom_height: customSize.height } : {}),
-            quality: "auto",
-            ...(billingMode === "platform" ? { platform_model: platformModel } : {}),
-          }
-        : {
-            prompt: prompt.trim(),
-            ...(size ? { size } : {}),
-            ...(size === "custom" ? { custom_width: customSize.width, custom_height: customSize.height } : {}),
-            quality: "auto",
-            ...(billingMode === "platform" ? { platform_model: platformModel } : {}),
-            count,
-          };
-      body.request_id = requestId;
-
-      if (referenceFiles.length && !redrawFromPrevious) {
-        setNotice("正在上传参考图");
-        referenceStoragePaths = await uploadReferenceFiles(referenceFiles, { headers: referenceUploadHeaders });
-        body.reference_storage_paths = referenceStoragePaths;
+      const body = { prompt: taskPrompt.trim(), request_id: requestId,
+        ...(previousImage ? { previous_image: previousImage } : { count }),
+        ...(size ? { size } : {}),
+        ...(size === "custom" ? { custom_width: customSize.width, custom_height: customSize.height } : {}),
+        quality: "auto", ...(billingMode === "platform" ? { platform_model: platformModel } : {}),
+        ...(apimartSpec && !apimartSpec.automaticResolution ? { resolution: imageResolution } : {}) };
+      if (!previousImage && !referenceSpec.disabled && referenceFiles.length) {
+        paths = await uploadReferenceFiles(referenceFiles, { headers: referenceUploadHeaders });
+        body.reference_storage_paths = paths;
       }
-
-      generationRequestStarted = true;
+      // A removed file/config change affects only the next task; this closure
+      // retains this submission's complete parameters and credential headers.
+      if (!live()) { store.finish(requestId, { error: { message: "登录身份已变化，尚未提交生成。" } }); return; }
+      started = true;
       if (!session?.user?.id) rememberGuestPrompt(body.prompt, requestId);
-      if (apimartSpec) body.resolution = imageResolution;
-      const res = await imageGenerationFetch(`${API_BASE}/${redrawFromPrevious ? "modify" : "generate"}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Request-Id": requestId, ...providerHeaders },
+      const response = await imageGenerationFetch(`${API_BASE}/${previousImage ? "modify" : "generate"}`, {
+        method: "POST", headers: { "Content-Type": "application/json", "X-Request-Id": requestId, ...providerHeaders },
         body: JSON.stringify(body),
       });
-      const data = await res.json();
-      if (apimartSpec && imageRequestOwner !== (sessionRef.current?.user?.id || "guest")) return;
-      if (!res.ok || data.error) {
-        const nextError = normalizeApiError(data);
-        setError({ ...nextError, billing_mode: billingMode });
-        if (nextError.code === "EMAIL_UNVERIFIED") setNotice("请先完成邮箱验证，验证后即可使用免费积分");
-        if (nextError.code === "PROVIDER_KEY_MISSING") setShowProviderSettings(true);
-        await refreshAccount();
-        return;
-      }
-      setImages(data.images || []);
-      setCurrentPrompt(data.prompt || prompt);
-      updateCreditBalance(data.credit_balance);
-      await refreshAccount();
-      setNotice(redrawFromPrevious ? "局部重绘完成" : "生成完成");
+      const data = await response.json();
+      if (!response.ok || data.error) {
+        const failure = { ...normalizeApiError(data), billing_mode: billingMode };
+        store.finish(requestId, { error: failure, pending: Boolean(apimartSpec && !data.job?.status?.match(/^(failed|completed)$/) && (data.submission_unknown || /UNKNOWN|PENDING|QUERY|UNCERTAIN|TIMEOUT|CONNECTION_FAILED/.test(data.code || ""))) });
+        if (selected()) setError(failure);
+      } else show(data);
     } catch (reason) {
-      const referenceUploadFailed = reason?.code?.startsWith("REFERENCE_");
-      if (generationRequestStarted && billingMode === "platform") {
-        const recovered = await recoverGeneration(requestId, { headers: authHeaders });
-        if (recovered?.images?.length) {
-          setImages(recovered.images);
-          setCurrentPrompt(recovered.prompt || prompt);
-          await refreshAccount();
-          setNotice(redrawFromPrevious ? "局部重绘已恢复" : "生成结果已恢复");
-          return;
-        }
+      // Existing synchronous models have their original GET-only recovery.
+      const recovered = started && billingMode === "platform" && !apimartSpec
+        ? await recoverGeneration(requestId, { headers: authHeaders }).catch(() => null) : null;
+      if (recovered?.images?.length) show(recovered);
+      else {
+        const failure = { message: reason?.code?.startsWith("REFERENCE_") ? "参考图上传失败" : "生成请求暂未完成",
+          code: reason?.code || "BACKEND_OFFLINE", billing_mode: billingMode,
+          detail: reason?.detail || reason?.message || "请查询原任务状态，避免重复提交。" };
+        store.finish(requestId, { error: failure, pending: started });
+        if (selected()) setError(failure);
       }
-      if (!referenceUploadFailed) await refreshAccount();
-      setError({
-        message: referenceUploadFailed ? "参考图上传失败" : "生成请求超时或后端连接中断",
-        billing_mode: billingMode,
-        code: reason?.code || "BACKEND_OFFLINE",
-        detail: reason?.detail || reason?.message || "本次请求可能被服务商或平台超时终止；未完成的任务会在超时后自动退回预留积分。",
-        recovery: referenceUploadFailed
-          ? ["重新选择参考图", "检查图片大小和格式", "再次生成"]
-          : ["等待几分钟后刷新账户", "不要连续重复点击", "稍后重新发起生成"],
-      });
     } finally {
-      await cleanupReferencePaths(referenceStoragePaths, referenceUploadHeaders);
-      setIsGenerating(false);
+      if (live()) await refreshAccount();
+      await cleanupReferencePaths(paths, referenceUploadHeaders);
     }
-  }, [
-    count,
-    apimartSpec,
-    imageResolution,
-    session?.user?.id,
-    customSize.height,
-    customSize.width,
-    authHeaders,
-    images,
-    mode,
-    prompt,
-    providerConfigured,
-    providerHeaders,
-    referenceUploadHeaders,
-    referenceFiles,
-    size,
-    platformModel,
-    billingMode,
-    refreshAccount,
-    requireGenerationAccess,
-    updateCreditBalance,
-  ]);
+  }, [activeImageModel, apimartSpec, authHeaders, billingMode, count, customSize.height, customSize.width,
+    imageResolution, imageTaskStore, platformModel, providerConfigured, providerHeaders, referenceFiles,
+    referenceSpec.disabled, referenceSpec.limit, referenceUploadHeaders, refreshAccount, requireGenerationAccess, session?.user?.id, size]);
 
-  const handleModify = useCallback(
-    async (modifyPrompt, prevImage) => {
-      if (!modifyPrompt.trim()) return;
-      if (!requireGenerationAccess()) return;
-      const requestId = createRequestId();
-      const imageRequestOwner = session?.user?.id || "guest";
-      setError(null);
-      setIsGenerating(true);
-      let generationRequestStarted = false;
-
-      try {
-        generationRequestStarted = true;
-        if (!session?.user?.id) rememberGuestPrompt(modifyPrompt.trim(), requestId);
-        const res = await imageGenerationFetch(`${API_BASE}/modify`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Request-Id": requestId, ...providerHeaders },
-          body: JSON.stringify({
-            prompt: modifyPrompt.trim(),
-            previous_image: prevImage,
-            ...(size ? { size } : {}),
-            ...(size === "custom" ? { custom_width: customSize.width, custom_height: customSize.height } : {}),
-            quality: "auto",
-            ...(apimartSpec ? { resolution: imageResolution } : {}),
-            ...(billingMode === "platform" ? { platform_model: platformModel } : {}),
-            request_id: requestId,
-          }),
-        });
-        const data = await res.json();
-        if (apimartSpec && imageRequestOwner !== (sessionRef.current?.user?.id || "guest")) return;
-        if (!res.ok || data.error) {
-          const nextError = normalizeApiError(data, {
-            message: "迭代失败",
-            code: "MODIFY_FAILED",
-            detail: "本次迭代请求没有完成。",
-            recovery: ["检查后端服务", "确认原图仍存在", "重新发起迭代"],
-          });
-          setError({ ...nextError, billing_mode: billingMode });
-          if (nextError.code === "EMAIL_UNVERIFIED") setNotice("请先完成邮箱验证，验证后即可使用免费积分");
-          await refreshAccount();
-          return;
-        }
-        setImages(data.images || []);
-        setCurrentPrompt(data.prompt || modifyPrompt);
-        updateCreditBalance(data.credit_balance);
-        await refreshAccount();
-        setNotice("迭代版本已生成");
-      } catch (reason) {
-        if (generationRequestStarted && billingMode === "platform") {
-          const recovered = await recoverGeneration(requestId, { headers: authHeaders });
-          if (recovered?.images?.length) {
-            setImages(recovered.images);
-            setCurrentPrompt(recovered.prompt || modifyPrompt);
-            await refreshAccount();
-            setNotice("迭代结果已恢复");
-            return;
-          }
-        }
-        await refreshAccount();
-        setError({
-          message: "迭代请求超时或后端连接中断",
-          billing_mode: billingMode,
-          code: reason?.code || "BACKEND_OFFLINE",
-          detail: reason?.detail || reason?.message || "本次请求可能被服务商或平台超时终止；未完成的任务会在超时后自动退回预留积分。",
-          recovery: ["等待几分钟后刷新账户", "不要连续重复点击", "稍后重新发起迭代"],
-        });
-      } finally {
-        setIsGenerating(false);
-      }
-    },
-    [apimartSpec, imageResolution, authHeaders, billingMode, customSize.height, customSize.width, platformModel, providerHeaders, refreshAccount, requireGenerationAccess, session?.user?.id, size, updateCreditBalance],
-  );
+  const handleGenerate = useCallback(() => runImageTask(prompt,
+    mode === "iterative" && images.length ? images[0].filename : null), [runImageTask, prompt, mode, images]);
+  const handleModify = useCallback((text, previousImage) => runImageTask(text, previousImage), [runImageTask]);
+  const viewImageTask = useCallback(task => {
+    selectedTaskRef.current = task.id;
+    setImages(task.images || []); setCurrentPrompt(task.prompt); setError(task.error || null);
+    setSelectedImages(new Set()); setStudioArea("image");
+  }, []);
 
   const handleSaveProvider = useCallback((nextConfig) => {
     saveProviderConfig(nextConfig);
@@ -668,6 +582,16 @@ export default function App() {
     setError(null);
     setNotice("图片服务配置已保存到当前标签页");
   }, []);
+
+  const handleImageModelChange = useCallback((model) => {
+    if (billingMode === "platform") {
+      setPlatformModel(model);
+      return;
+    }
+    const nextConfig = { ...providerConfig, model };
+    saveProviderConfig(nextConfig);
+    setProviderConfig(nextConfig);
+  }, [billingMode, providerConfig]);
 
   const handleClearProvider = useCallback(() => {
     clearProviderConfig();
@@ -696,12 +620,14 @@ export default function App() {
     if (downloadingImagesRef.current.has(filename)) return;
     downloadingImagesRef.current.add(filename);
     setDownloadingImages(new Set(downloadingImagesRef.current));
+    setDownloadError(null);
     setNotice("正在读取原图，请稍候…");
     try {
-      await downloadImage(filename, { authenticated: Boolean(session), headers: authHeaders });
-      setNotice("已请求浏览器下载原图");
+      const result = await downloadImage(filename, { authenticated: Boolean(session), headers: authHeaders });
+      setNotice(result === "cancelled" ? "已取消保存" : result === "saved" ? "原图已保存" : "已请求浏览器下载原图；若被迅雷接管，请关闭接管后重试。");
     } catch (reason) {
-      setNotice("下载失败：" + (reason?.message || "请稍后重试"));
+      setDownloadError({ message: "原图下载未完成", detail: reason?.message || "浏览器没有完成原图读取。", filenames: [filename], kind: "image" });
+      setNotice("原图下载未完成，可点击图片下方或预览顶部的“备用下载”。");
     } finally {
       downloadingImagesRef.current.delete(filename);
       setDownloadingImages(new Set(downloadingImagesRef.current));
@@ -710,30 +636,25 @@ export default function App() {
 
   const handleDownloadBatch = useCallback(async () => {
     if (selectedImages.size === 0 || isExporting) return;
+    const filenames = [...selectedImages];
     setIsExporting(true);
+    setDownloadError(null);
     try {
-      setNotice("正在读取图片并在浏览器打包");
-      const blob = await createImageArchive([...selectedImages], {
+      setNotice("正在读取原图，完成后将打包下载");
+      const result = await saveBrowserFile("ai-poster-export.zip", () => createImageArchive(filenames, {
         authenticated: Boolean(session),
         headers: authHeaders,
-        onProgress: (done, total) => setNotice(`正在打包 ${done} / ${total} 张图片`),
-      });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "ai-poster-export.zip";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 60000);
-      setNotice("已开始下载 ZIP");
+        onProgress: (done, total) => setNotice(`已读取 ${done} / ${total} 张图片${done < total ? "，正在读取下一张…" : "，正在打包…"}`),
+      }));
+      setNotice(result === "cancelled" ? "已取消保存" : result === "saved" ? "ZIP 已保存" : "已请求浏览器下载 ZIP；若被迅雷接管，请关闭接管后重试。");
     } catch (reason) {
-      setError({
-        message: "下载失败，请重试",
-        code: "DOWNLOAD_FAILED",
+      setDownloadError({
+        message: "批量下载未完成",
         detail: reason?.message || "浏览器没有完成图片读取或打包，请稍后重试。",
-        recovery: ["确认图片仍可预览", "减少每次导出的图片数量", "再次导出"],
+        filenames,
+        kind: "batch",
       });
+      setNotice("批量下载未完成，图片仍保留在画廊，可使用每张图片下的“备用下载”。");
     } finally {
       setIsExporting(false);
     }
@@ -784,6 +705,7 @@ export default function App() {
           onOpenRecharge={() => setRechargeOpen(true)}
           onOpenMetrics={() => setMetricsOpen(true)}
           onOpenHistory={() => setHistoryOpen(true)}
+          onOpenCommunity={() => setCommunityOpen(true)}
         /> : <StudioNavigation
           area={studioArea}
           onAreaChange={setStudioArea}
@@ -795,13 +717,20 @@ export default function App() {
           onOpenRecharge={() => setRechargeOpen(true)}
           onOpenMetrics={() => setMetricsOpen(true)}
           onOpenHistory={() => setHistoryOpen(true)}
+          onOpenCommunity={() => setCommunityOpen(true)}
           onOpenProvider={() => setShowProviderSettings(true)}
         />}
 
         <main className="flex min-w-0 flex-1 flex-col">
           <AnnouncementBanner />
+          {(imageActiveCount > 0 || musicActiveCount > 0 || videoActiveCount > 0) && <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-b border-accent/20 bg-accent/8 px-4 py-2 text-xs text-text-secondary" role="status">
+            <Activity size={14} className="text-accent" />任务进行中
+            <button type="button" className="min-h-7 text-accent" onClick={() => setStudioArea("image")}>图像 {imageActiveCount}</button>
+            {!classicWorkspace && <button type="button" className="min-h-7 text-accent" onClick={() => setStudioArea("music")}>音乐 {musicActiveCount}</button>}
+            {!classicWorkspace && <button type="button" className="min-h-7 text-accent" onClick={() => setStudioArea("video")}>视频 {videoActiveCount}</button>}
+            <span className="text-text-muted">可以切换工作区继续创作</span>
+          </div>}
           <div className={`studio-image-workspace ${classicWorkspace || studioArea === "image" ? "" : "studio-is-hidden"}`}>
-          {!classicWorkspace && <div className="studio-image-toolbar"><span>图像工作区 · 沿用现有图片服务</span>{Object.entries(MODE_META).map(([key, item]) => <button type="button" key={key} onClick={() => setMode(key)} aria-pressed={mode === key}><item.icon size={15} />{item.label}</button>)}</div>}
           <header className="border-b border-border-subtle bg-bg-primary/92 px-4 py-3 backdrop-blur lg:px-6">
             <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
               <div className="flex min-w-0 items-center gap-3">
@@ -823,17 +752,21 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center">
-                {workspaceStats.map((item) => (
-                  <div
-                    key={item.label}
-                    className={`rounded-lg border border-border-subtle bg-bg-secondary px-3 py-2 ${
-                      mode === "canvas" ? "hidden sm:block" : ""
+              <div role="group" aria-label="图像工作区操作" className="image-workspace-actions grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center">
+                {!classicWorkspace && Object.entries(MODE_META).map(([key, item]) => (
+                  <button
+                    type="button"
+                    key={key}
+                    onClick={() => setMode(key)}
+                    aria-pressed={mode === key}
+                    className={`flex min-h-11 min-w-0 items-center justify-center gap-2 whitespace-nowrap rounded-lg border px-3 text-sm transition ${
+                      mode === key
+                        ? "border-accent bg-accent text-white hover:bg-accent-hover"
+                        : "border-border-default bg-bg-secondary text-text-secondary hover:bg-bg-elevated"
                     }`}
                   >
-                    <p className="text-[11px] text-text-muted">{item.label}</p>
-                    <p className="mt-0.5 text-xs font-medium text-text-secondary">{item.value}</p>
-                  </div>
+                    <item.icon size={16} />{item.label}
+                  </button>
                 ))}
                 <button
                   type="button"
@@ -878,6 +811,8 @@ export default function App() {
                   referenceUploadHeaders={referenceUploadHeaders}
                   billingMode={billingMode}
                   platformModel={platformModel}
+                  imageModel={activeImageModel}
+                  onImageModelChange={handleImageModelChange}
                   imageResolution={imageResolution}
                   authenticated={Boolean(session)}
                   onAuthRequired={() => { setAuthOpen(true); setNotice("请先登录，验证邮箱后即可使用免费积分"); }}
@@ -899,13 +834,20 @@ export default function App() {
             }
           >
             <section className="flex min-h-0 flex-col gap-4 lg:overflow-y-auto lg:pr-1">
-              <PresetLibrary activePresetId={activePreset?.id} onApplyPreset={handleApplyPreset} />
+              {classicWorkspace && <PresetLibrary activePresetId={activePreset?.id} onApplyPreset={handleApplyPreset} />}
               <PromptEditor
+                imageModel={activeImageModel}
+                imageReferenceCount={referenceFiles.length || (mode === "iterative" && images.length ? 1 : 0)}
+                onImageModelChange={handleImageModelChange}
+                billingMode={billingMode}
                 prompt={prompt}
                 onPromptChange={setPrompt}
                 onGenerate={handleGenerate}
                 onOpenProvider={() => setShowProviderSettings(true)}
-                isGenerating={isGenerating}
+                isGenerating={false}
+                generationLimitReached={imageActiveCount >= IMAGE_TASK_LIMIT}
+                activeTaskCount={imageActiveCount}
+                referenceLimit={referenceSpec.limit}
                 currentPrompt={currentPrompt}
                 referenceFiles={referenceFiles}
                 onReferenceAdd={handleReferenceAdd}
@@ -922,6 +864,7 @@ export default function App() {
                 hasPreviousImage={images.length > 0}
               />
               <ParameterPanel
+                billingMode={billingMode}
                 apimartSpec={apimartSpec}
                 resolution={imageResolution}
                 onResolutionChange={setImageResolution}
@@ -936,9 +879,7 @@ export default function App() {
               />
             </section>
 
-            <section className="min-h-[620px] min-w-0 lg:min-h-0">
-              <ApimartImageTasks key={`${session?.user?.id || "guest"}:${billingMode}`} headers={providerHeaders} enabled={Boolean(apimartSpec && providerConfigured)}
-                onResult={result => { setImages(result); setSelectedImages(new Set()); setCurrentPrompt(""); setNotice("已读取原任务结果，不重复生图"); }} onRefreshAccount={refreshAccount} />
+            <section className="flex min-h-[620px] min-w-0 flex-col gap-3 lg:min-h-0">
               <Gallery
                 billingMode={billingMode}
                 images={images}
@@ -957,6 +898,8 @@ export default function App() {
                 onDownloadImage={handleDownloadImage}
                 isExporting={isExporting}
                 downloadingImages={downloadingImages}
+                downloadError={downloadError}
+                onDismissDownloadError={() => setDownloadError(null)}
                 onAddToCanvas={handleAddToCanvas}
                 onCopyPrompt={handleCopyPrompt}
                 onRetry={handleGenerate}
@@ -966,12 +909,16 @@ export default function App() {
                 authenticated={Boolean(session)}
                 authHeaders={authHeaders}
               />
+              <ImageTaskQueue key={imageTaskStore.identity} tasks={imageTasks} onView={viewImageTask} onQuery={async task => {
+                try { await imageTaskStore.recover(task.id); }
+                catch { setNotice("原任务暂时无法查询，请稍后再试，不要重复生成。"); }
+              }} />
             </section>
           </div>
           </div>
           {!classicWorkspace && <div className={`studio-workspace-host ${studioArea === "image" ? "studio-is-hidden" : ""}`}>
             <Suspense fallback={<div className="flex flex-1 items-center justify-center p-16 text-text-muted">正在打开创作空间…</div>}>
-              <StudioWorkspace key={session?.user?.id || "guest"} area={studioArea} onAreaChange={setStudioArea} username={account?.profile?.username} identity={session?.user?.id || "guest"} authHeaders={authHeaders} session={session} account={account} accountLoading={accountLoading} onLogin={() => setAuthOpen(true)} onAccountRefresh={refreshAccount} onStartImage={text => { if (text?.trim()) { setPrompt(text); setActivePreset(null); setMode("create"); } setStudioArea("image"); }} />
+              <StudioWorkspace key={session?.user?.id || "guest"} area={studioArea} onAreaChange={setStudioArea} username={account?.profile?.username} identity={session?.user?.id || "guest"} authHeaders={authHeaders} session={session} account={account} accountLoading={accountLoading} onLogin={() => setAuthOpen(true)} onAccountRefresh={refreshAccount} onTaskActivity={setMusicActiveCount} onVideoTaskActivity={setVideoActiveCount} musicHistoryRestore={musicHistoryRestore} videoHistoryRestore={videoHistoryRestore} onImportCompanion={importCompanion} presetLibrary={<PresetLibrary activePresetId={activePreset?.id} onApplyPreset={preset => { handleApplyPreset(preset); setMode("create"); setStudioArea("image"); }} />} onStartImage={text => { if (text?.trim()) { setPrompt(text); setActivePreset(null); setMode("create"); } setStudioArea("image"); }} />
             </Suspense>
           </div>}
         </main>
@@ -1009,10 +956,11 @@ export default function App() {
       />
 
       <AuthModal open={authOpen} onClose={() => setAuthOpen(false)} onNotice={setNotice} />
+      <CommunityQrModal open={communityOpen} onClose={() => setCommunityOpen(false)} />
       <AccountPanel open={accountOpen} account={account} loading={accountLoading} onClose={() => setAccountOpen(false)} onSignOut={handleSignOut} onDelete={handleDeleteAccount} onOpenRecharge={() => { setAccountOpen(false); setRechargeOpen(true); }} />
       <AdminMetricsPanel open={metricsOpen} authHeaders={authHeaders} onClose={() => setMetricsOpen(false)} />
-      <RechargePanel open={rechargeOpen} onClose={() => setRechargeOpen(false)} />
-      <PromptHistoryPanel key={session?.user?.id || "guest"} open={historyOpen} userId={session?.user?.id} authHeaders={authHeaders} onClose={() => setHistoryOpen(false)} onUsePrompt={value => { setPrompt(value); setActivePreset(null); setMode("create"); setStudioArea("image"); setHistoryOpen(false); setNotice("历史提示词已填入编辑器"); }} />
+      <RechargePanel key={`recharge:${session?.user?.id || "guest"}`} open={rechargeOpen} onClose={() => setRechargeOpen(false)} session={session} account={account} authHeaders={authHeaders} onLogin={() => {setRechargeOpen(false);setAuthOpen(true);}} onAccountRefresh={refreshAccount} />
+      <PromptHistoryPanel key={session?.user?.id || "guest"} open={historyOpen} userId={session?.user?.id} authHeaders={authHeaders} onClose={() => setHistoryOpen(false)} onUsePrompt={(value, item) => { if (item?.kind === "video") { setVideoHistoryRestore({ id: createRequestId(), identity: session?.user?.id || "guest", entry: item }); setStudioArea("video"); } else if (item?.kind === "music") { setMusicHistoryRestore({ id: createRequestId(), identity: session?.user?.id || "guest", entry: item }); setStudioArea("music"); } else { setPrompt(value); setActivePreset(null); setMode("create"); setStudioArea("image"); } setHistoryOpen(false); setNotice("历史提示词已填入，请核对模型与参数后生成"); }} />
 
       {(notice || selectedCount > 0) && (
         <div className="fixed bottom-4 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-lg border border-border-default bg-bg-secondary px-4 py-3 text-sm text-text-secondary shadow-2xl">

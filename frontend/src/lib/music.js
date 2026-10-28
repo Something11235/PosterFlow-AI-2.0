@@ -1,9 +1,16 @@
 export const SUNO_VERSIONS = ["v6", "v6-wild", "v6-mini"];
-export const FLOW_VERSIONS = [{ value: "lyria-3-pro", label: "Lyria 3 Pro" }, { value: "lyria-3.5", label: "Lyria 3.5" }];
-export const MUSIC_PRICE = 2;
+export const FLOW_VERSIONS = [{ value: "lyria-3-pro", label: "标准版" }, { value: "lyria-3.5", label: "Lyria 3.5" }];
+export const MUSIC_REQUEST_PRICE = 2;
+export function musicJobCost(job) {
+  if (job?.billing_mode === "own_key") return 0;
+  if (job?.billing_unit === "request") return job.credits_per_request ?? MUSIC_REQUEST_PRICE;
+  // Old completed jobs retain their actual charge; legacy unsettled jobs may
+  // still be served by an older candidate while deployments are being tested.
+  return job?.charged_credits || (job?.generated_count || 0) * (job?.credits_per_song || 2);
+}
 export const musicLength = value => Array.from(String(value || "").trim()).length;
 export const defaultSuno = () => ({ model: "suno", version: "v6", custom: false, instrumental: true, prompt: "", title: "", style: "", vocal_gender: "", audio_format: "", duration: "", negative_tags: "", variety: "", style_weight: "", weirdness_constraint: "", audio_weight: "", auto_lyrics: false });
-export const defaultFlow = () => ({ model: "flowmusic", version: "lyria-3-pro", sound_prompt: "", lyrics: "", title: "", bpm: "", length: "", seed: "" });
+export const defaultFlow = () => ({ model: "flowmusic", version: "lyria-3-pro", operation: "generate", prompt: "", strength: "0.5", sound_prompt: "", lyrics: "", title: "", bpm: "", length: "", seed: "" });
 
 function checkText(value, label, limit) {
   const result = String(value || "").trim();
@@ -107,6 +114,8 @@ export async function musicApi(path, { mode = "platform", key = "", endpoint = "
     if (!response.ok || payload.error) {
       const error = new Error(typeof payload.error === "string" ? payload.error : "音乐请求未完成，请稍后刷新。");
       error.code = payload.code;
+      error.status = response.status;
+      error.submission_unknown = Boolean(payload.submission_unknown);
       throw error;
     }
     return payload;

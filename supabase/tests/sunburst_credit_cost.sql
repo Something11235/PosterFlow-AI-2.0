@@ -48,7 +48,7 @@ begin
 
   -- Four new Sunburst images reserve four credits rather than eight.
   v_result := pg_temp.reserve_platform_credits(v_user, v_request, 4, 'synthetic-provider', 'gpt-image-2.5-sunburst', 'synthetic test', null, null);
-  if v_result->>'ok' is distinct from 'true' or (v_result->>'reserved')::integer is distinct from 4 or (v_result->>'balance')::integer is distinct from 6 then
+  if v_result->>'ok' is distinct from 'true' or (v_result->>'reserved')::integer is distinct from 4 or (v_result->>'balance')::numeric is distinct from 6 then
     raise exception 'Sunburst must reserve one credit per requested image';
   end if;
   v_job := (v_result->>'job_id')::uuid;
@@ -58,24 +58,24 @@ begin
 
   -- A repeated request must not reserve again.
   v_result := pg_temp.reserve_platform_credits(v_user, v_request, 4, 'synthetic-provider', 'gpt-image-2.5-sunburst', 'synthetic test', null, null);
-  if v_result->>'existing' is distinct from 'true' or (v_result->>'balance')::integer is distinct from 6 then
+  if v_result->>'existing' is distinct from 'true' or (v_result->>'balance')::numeric is distinct from 6 then
     raise exception 'Reservation idempotency changed';
   end if;
 
   -- Partial success charges the two actual images and refunds the other two.
   v_result := pg_temp.settle_generation(v_job, 2, 1, '["synthetic-1.png", "synthetic-2.png"]');
-  if (v_result->>'charged')::integer is distinct from 2 or (v_result->>'refunded')::integer is distinct from 2 or (v_result->>'balance')::integer is distinct from 8 then
+  if (v_result->>'charged')::integer is distinct from 2 or (v_result->>'refunded')::integer is distinct from 2 or (v_result->>'balance')::numeric is distinct from 8 then
     raise exception 'Partial result settlement must use the reserved one-credit price';
   end if;
   v_result := pg_temp.settle_generation(v_job, 4, 1, '[]');
-  if v_result->>'existing' is distinct from 'true' or (v_result->>'balance')::integer is distinct from 8 then
+  if v_result->>'existing' is distinct from 'true' or (v_result->>'balance')::numeric is distinct from 8 then
     raise exception 'Settlement idempotency changed';
   end if;
 
   -- Empty output returns every reserved credit.
   v_result := pg_temp.reserve_platform_credits(v_user, gen_random_uuid(), 2, 'synthetic-provider', 'gpt-image-2.5-sunburst', '', null, null);
   v_result := pg_temp.settle_generation((v_result->>'job_id')::uuid, 0, 1, '[]');
-  if (v_result->>'charged')::integer is distinct from 0 or (v_result->>'refunded')::integer is distinct from 2 or (v_result->>'balance')::integer is distinct from 8 then
+  if (v_result->>'charged')::integer is distinct from 0 or (v_result->>'refunded')::integer is distinct from 2 or (v_result->>'balance')::numeric is distinct from 8 then
     raise exception 'Empty results must refund all reserved credits';
   end if;
 
@@ -85,7 +85,7 @@ begin
     raise exception 'A one-credit account must be able to generate one Sunburst image';
   end if;
   v_result := pg_temp.settle_generation((v_result->>'job_id')::uuid, 1, 1, '["synthetic.png"]');
-  if (v_result->>'charged')::integer is distinct from 1 or (v_result->>'balance')::integer is distinct from 0 then
+  if (v_result->>'charged')::integer is distinct from 1 or (v_result->>'balance')::numeric is distinct from 0 then
     raise exception 'Single-image Sunburst settlement must charge exactly one credit';
   end if;
   v_result := pg_temp.reserve_platform_credits(v_low_balance_user, gen_random_uuid(), 1, 'synthetic-provider', 'gpt-image-2.5-sunburst', '', null, null);

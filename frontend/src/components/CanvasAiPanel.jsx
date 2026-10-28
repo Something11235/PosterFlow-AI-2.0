@@ -1,4 +1,5 @@
 import React, { useRef } from "react";
+import ImageModelSelect from "./ImageModelSelect";
 import { MAX_REFERENCE_IMAGES } from "../lib/provider";
 import {
   CheckCircle2,
@@ -13,6 +14,10 @@ import {
 } from "lucide-react";
 
 export default function CanvasAiPanel({
+  imageModel,
+  onImageModelChange,
+  billingMode,
+  referenceLimit = MAX_REFERENCE_IMAGES,
   workflow,
   onWorkflowChange,
   onClose,
@@ -38,6 +43,7 @@ export default function CanvasAiPanel({
   const hasTarget = isFrameWorkflow ? Boolean(selection.holder) : Boolean(selection.image);
   const hasInstruction =
     Boolean(prompt.trim()) || (!isFrameWorkflow && Boolean(selection.annotationTexts?.length));
+  const referenceBlocked = !isFrameWorkflow && (referenceLimit === 0 || (selection.imageCount || 1) > referenceLimit);
   const generateLabel = isFrameWorkflow ? "生成到选中图框" : "生成重绘版本";
   const insertMention = (index) => {
     const mention = `@图${index}`;
@@ -79,6 +85,7 @@ export default function CanvasAiPanel({
       </div>
 
       <div className="p-4">
+        <ImageModelSelect model={imageModel} referenceCount={isFrameWorkflow ? 0 : Math.max(1, selection.images?.length || 1)} billingMode={billingMode} onModelChange={onImageModelChange} onOpenProvider={onOpenProvider} disabled={busy} />
         <div className="grid grid-cols-2 rounded-md border border-border-subtle bg-bg-primary p-1" role="tablist">
           <button
             type="button"
@@ -105,6 +112,8 @@ export default function CanvasAiPanel({
             标注重绘
           </button>
         </div>
+
+        {referenceBlocked && <p role="alert" className="mt-3 text-xs leading-5 text-gold">{referenceLimit === 0 ? "当前模型仅支持文字生成，请切换模型后重绘。" : `当前模型最多支持 ${referenceLimit} 张参考图，请减少所选图片。`}</p>}
 
         {isFrameWorkflow && (
           <div className="mt-4 border-b border-border-subtle pb-4">
@@ -180,7 +189,7 @@ export default function CanvasAiPanel({
                         " 个标注"
                     : "未检测到邻近标注，仅使用干净原图"
                   : selection.imageCount > 1
-                    ? "可同时选择多张原图（最多 " + MAX_REFERENCE_IMAGES + " 张），并按图1、图2顺序用于 @引用。"
+                    ? "可同时选择多张原图（最多 " + referenceLimit + " 张），并按图1、图2顺序用于 @引用。"
                     : "先用矩形框/圆形框圈出要修改的区域，再用 @图1、@图2 指定素材；未圈选区域会尽量保持不变。"}
             </p>
           </div>
@@ -272,7 +281,7 @@ export default function CanvasAiPanel({
           <button
             type="button"
             onClick={onGenerate}
-            disabled={busy || previewBusy || !hasTarget || !hasInstruction}
+            disabled={busy || previewBusy || !hasTarget || !hasInstruction || referenceBlocked}
             className="mt-4 flex min-h-12 w-full items-center justify-center gap-2 rounded-md bg-accent px-4 text-sm font-semibold text-white transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-45"
           >
             {busy ? <Loader2 size={17} className="animate-spin-soft" /> : <Sparkles size={17} />}

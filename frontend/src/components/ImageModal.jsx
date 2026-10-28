@@ -1,26 +1,19 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Download, ExternalLink, Loader2, RefreshCw, X } from "lucide-react";
-import { fetchImageBlob, fetchImageDownloadUrl } from "../lib/client";
+import React, { useCallback, useEffect, useState } from "react";
+import { Download, Loader2, RefreshCw, X } from "lucide-react";
+import { fetchImageBlob } from "../lib/client";
+import BackupImageDownload from "./BackupImageDownload";
 
 export default function ImageModal({ filename, onClose, onModify, onDownloadImage, isDownloading = false, authenticated = false, authHeaders }) {
   const [modifyText, setModifyText] = useState("");
   const [assetUrl, setAssetUrl] = useState("");
   const [assetError, setAssetError] = useState("");
   const [retryCount, setRetryCount] = useState(0);
-  const [directDownloadUrl, setDirectDownloadUrl] = useState("");
-  const [preparingDownload, setPreparingDownload] = useState(false);
-  const [downloadError, setDownloadError] = useState("");
-  const downloadRequestRef = useRef(0);
 
   useEffect(() => {
     let alive = true;
     let objectUrl = "";
     setAssetUrl("");
     setAssetError("");
-    downloadRequestRef.current += 1;
-    setDirectDownloadUrl("");
-    setDownloadError("");
-    setPreparingDownload(false);
     fetchImageBlob(filename, { authenticated, headers: authHeaders, forceRefresh: retryCount > 0 }).then((blob) => {
       if (alive) {
         objectUrl = URL.createObjectURL(blob);
@@ -29,25 +22,9 @@ export default function ImageModal({ filename, onClose, onModify, onDownloadImag
     }).catch((reason) => { if (alive) setAssetError(reason?.message || "图片暂时无法读取"); });
     return () => {
       alive = false;
-      downloadRequestRef.current += 1;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [authHeaders, authenticated, filename, retryCount]);
-
-  const prepareDirectDownload = async () => {
-    if (preparingDownload) return;
-    const request = ++downloadRequestRef.current;
-    setPreparingDownload(true);
-    setDownloadError("");
-    try {
-      const url = await fetchImageDownloadUrl(filename, { authenticated, headers: authHeaders });
-      if (request === downloadRequestRef.current) setDirectDownloadUrl(url);
-    } catch {
-      if (request === downloadRequestRef.current) setDownloadError("备用下载地址获取失败，请重试。");
-    } finally {
-      if (request === downloadRequestRef.current) setPreparingDownload(false);
-    }
-  };
 
   const handleKeyDown = useCallback(
     (e) => {
@@ -63,11 +40,13 @@ export default function ImageModal({ filename, onClose, onModify, onDownloadImag
 
   return (
     <div role="dialog" aria-modal="true" aria-label="原图预览" className="fixed inset-0 z-50 flex flex-col bg-black/82 backdrop-blur-sm animate-fade-in">
-      <div className="flex items-center justify-between border-b border-white/10 bg-bg-primary/72 px-4 py-3">
-        <div>
+      <div className="flex items-center justify-between gap-3 border-b border-white/10 bg-bg-primary/72 px-4 py-3">
+        <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold text-white">原图预览</p>
-          <p className="mt-0.5 text-xs text-text-muted">{filename}</p>
+          <p className="mt-0.5 truncate text-xs text-text-muted">{filename}</p>
         </div>
+        <div className="flex max-w-[70%] shrink-0 items-center gap-2">
+        <BackupImageDownload filename={filename} authenticated={authenticated} authHeaders={authHeaders} />
         <button
           type="button"
           onClick={onClose}
@@ -76,6 +55,7 @@ export default function ImageModal({ filename, onClose, onModify, onDownloadImag
         >
           <X size={20} />
         </button>
+        </div>
       </div>
 
       <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto p-4 lg:grid-cols-[minmax(0,1fr)_340px]">
@@ -110,33 +90,21 @@ export default function ImageModal({ filename, onClose, onModify, onDownloadImag
             可下载当前原图，也可在迭代模式下输入修改方向继续生成新版。
           </p>
 
+          <p className="mt-3 text-sm leading-6 text-text-secondary">若网络不佳或下载失败，请点击“备用下载”。</p>
+          <div className="mt-3 grid gap-2">
           <button
             type="button"
             onClick={() => onDownloadImage(filename)}
             disabled={isDownloading}
             aria-busy={isDownloading}
-            className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-accent px-4 text-sm font-medium text-white transition hover:bg-accent-hover disabled:cursor-wait disabled:opacity-65"
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-accent px-4 text-sm font-medium text-white transition hover:bg-accent-hover disabled:cursor-wait disabled:opacity-65"
           >
             {isDownloading ? <Loader2 size={17} className="animate-spin" /> : <Download size={17} />}
             {isDownloading ? "正在读取原图…" : "下载原图"}
           </button>
-
-          <div className="mt-4 border-t border-border-subtle pt-4">
-            {directDownloadUrl ? (
-              <a href={directDownloadUrl} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" download={filename}
-                className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-accent/40 bg-accent/10 px-3 text-sm text-accent transition hover:bg-accent/20">
-                <ExternalLink size={16} />打开原图并下载
-              </a>
-            ) : (
-              <button type="button" onClick={prepareDirectDownload} disabled={preparingDownload} aria-busy={preparingDownload}
-                className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-border-default px-3 text-sm text-text-secondary transition hover:bg-bg-elevated disabled:cursor-wait disabled:opacity-65">
-                {preparingDownload ? <Loader2 size={16} className="animate-spin" /> : <ExternalLink size={16} />}
-                {preparingDownload ? "正在准备备用下载…" : "备用下载"}
-              </button>
-            )}
-            <p className="mt-2 text-xs leading-5 text-text-muted">预览或普通下载卡住时，可尝试让浏览器直接读取原图。不重新生成，不扣积分；连接失败时仍可能无法下载。</p>
-            {downloadError && <p role="alert" className="mt-2 text-xs text-error">{downloadError}</p>}
+            <BackupImageDownload filename={filename} authenticated={authenticated} authHeaders={authHeaders} />
           </div>
+          <p className="mt-2 text-xs leading-5 text-text-muted">备用下载将准备直达原图的链接，准备完成后点击打开。不重新生成，不扣积分。若迅雷等工具提示资源无效，请关闭下载接管，使用浏览器保存。</p>
 
           {onModify && (
             <div className="mt-5 border-t border-border-subtle pt-5">

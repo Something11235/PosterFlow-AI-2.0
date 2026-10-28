@@ -1,0 +1,42 @@
+-- Isolated fixtures created by the migration QA harness; never run on production.
+begin;
+do $$
+declare u uuid:='55555555-5555-4555-8555-555555555555';r jsonb;req uuid;gid uuid;b integer;n bigint;before_jobs bigint;h record;
+begin
+ select count(*) into n from public.get_prompt_history(u,now()-interval '7 days') where kind='music';
+ if n<>1 then raise exception 'migrated history not readable';end if;
+ if exists(select 1 from public.get_prompt_history('66666666-6666-4666-8666-666666666666',now()-interval '7 days') where kind='music') then raise exception 'cross-account history';end if;
+ req:='55555555-5555-4555-8555-555555555552';
+ r:=public.begin_music_job_with_history('user-'||u,u,req,'platform','suno','v6',repeat('b',64),'new lyrics','{"model":"suno","prompt":"new lyrics","custom":true}');
+ if r->>'ok'<>'true' then raise exception 'legacy live begin failed';end if;
+ gid:=(r->'job'->>'id')::uuid;
+ if not exists(select 1 from public.music_jobs where id=gid and history_prompt='new lyrics' and history_created_at=created_at) then raise exception 'new history not stored on task';end if;
+ select balance into b from public.credit_accounts where user_id=u;
+ r:=public.begin_music_job_with_history('user-'||u,u,req,'platform','suno','v6',repeat('b',64),'changed','{"model":"suno","prompt":"changed"}');
+ if r->>'existing'<>'true' or (select balance from public.credit_accounts where user_id=u)<>b or (select history_prompt from public.music_jobs where id=gid)<>'new lyrics' then raise exception 'repeat changed history/money';end if;
+ r:=public.begin_music_job_with_history('user-'||u,u,gen_random_uuid(),'platform','suno','v6',repeat('c',64),'unsafe','{"model":"suno","apiKey":"never-store"}');
+ if r->>'code'<>'INVALID_MUSIC_HISTORY' or (select balance from public.credit_accounts where user_id=u)<>b then raise exception 'unsafe fields accepted';end if;
+ select count(*) into before_jobs from public.music_jobs;
+ select count(*) into n from public.credit_transactions;
+ update public.music_jobs set history_created_at=now()-interval '8 days' where request_id='55555555-5555-4555-8555-555555555551';
+ if exists(select 1 from public.get_prompt_history(u,now()-interval '30 days') where prompt='description and lyrics') then raise exception 'expired history visible';end if;
+ r:=private.prune_prompt_text(true);
+ if (r->>'music_eligible')::int<1 then raise exception 'dry-run misses expired text';end if;
+ r:=private.prune_prompt_text(false);
+ if not exists(select 1 from public.music_jobs where request_id='55555555-5555-4555-8555-555555555551' and history_prompt='' and history_parameters is null and history_created_at is null and reserved_credits=2 and status='submitting') then raise exception 'pruning damaged task';end if;
+ if (select count(*) from public.music_jobs)<>before_jobs or (select count(*) from public.credit_transactions)<>n or (select balance from public.credit_accounts where user_id=u)<>b then raise exception 'prune changed money/tasks';end if;
+ if (select count(*) from public.get_prompt_history(u,now()-interval '7 days') where prompt='new lyrics')<>1 then raise exception 'recent text cleared';end if;
+ r:=public.apply_music_job('user-'||u,req,'submitted','task_merge_fixture_12345678');
+ r:=public.apply_music_job('user-'||u,req,'completed',null,2);
+ if r->'job'->>'charged_credits'<>'2' or r->'job'->>'history_prompt'<>'new lyrics' then raise exception 'settlement/history compatibility';end if;
+ r:=public.begin_music_job_with_history('own-key-merge-fixture',u,gen_random_uuid(),'own_key','suno','v6',repeat('d',64),'another recent prompt','{"model":"suno","prompt":"another recent prompt"}');
+ select * into h from public.get_prompt_history(u,now()-interval '7 days',null,null,1);
+ select count(*) into n from public.get_prompt_history(u,now()-interval '7 days',h.created_at,h.id,1);
+ if h.id is null or n<>1 then raise exception 'merged history cursor lost or repeated page';end if;
+ if has_function_privilege('anon','public.get_prompt_history(uuid,timestamptz,timestamptz,uuid,integer)','execute') or has_function_privilege('authenticated','public.begin_music_job_with_history(text,uuid,uuid,text,text,text,text,text,jsonb)','execute') then raise exception 'history RPC exposed';end if;
+end;
+$$;
+set local role service_role;
+select * from public.get_prompt_history('55555555-5555-4555-8555-555555555555',now()-interval '7 days');
+reset role;
+rollback;

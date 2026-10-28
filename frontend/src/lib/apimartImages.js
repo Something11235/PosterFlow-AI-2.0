@@ -54,10 +54,10 @@ export async function imageGenerationFetch(endpoint, init, { pollInterval = 4000
     try {
       data = await readImageTask(body.request_id, init.headers);
     } catch (error) {
-      return responseJson({ error: error.message + " 可在图片任务窗口继续查询，请勿重复生成。", code: error.code || "IMAGE_TASK_QUERY_FAILED" }, 503);
+      return responseJson({ error: error.message + " 可在图片任务窗口继续查询，请勿重复生成。", code: error.code || "IMAGE_TASK_QUERY_FAILED", submission_unknown:true }, 503);
     }
   }
   window.dispatchEvent(new Event("posterflow:image-tasks"));
-  if (data.job?.status !== "completed") return responseJson({ ...data, error: data.job?.status === "failed" ? "图片服务未完成本次任务，已按实际结果退回预留积分。" : "提交结果待确认，请保留原任务并核对服务商记录，不要重复生成。", code: data.job?.status === "failed" ? "APIMART_TASK_FAILED" : "IMAGE_SUBMISSION_UNKNOWN" }, 409);
+  if (data.job?.status !== "completed") return responseJson({ ...data, error: data.job?.status === "failed" ? data.job.failure_reason || "图片服务未完成本次任务，已按实际结果退回预留积分。" : "提交结果待确认，请保留原任务并核对服务商记录，不要重复生成。", code: data.job?.status === "failed" ? data.job.error_code || "APIMART_TASK_FAILED" : "IMAGE_SUBMISSION_UNKNOWN", detail:data.job?.failure_reason, recovery:data.job?.recovery }, 409);
   return responseJson({ ...data, prompt: body.prompt });
 }

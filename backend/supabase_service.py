@@ -386,15 +386,18 @@ class SupabaseGateway:
         )
 
     def prompt_history(self, user_id: str, cutoff: str, cursor=None, limit: int = 51) -> list[dict[str, Any]]:
-        params = {
-            "user_id": f"eq.{user_id}", "select": "id,prompt,created_at",
-            "created_at": f"gt.{cutoff}", "prompt": "neq.",
-            "order": "created_at.desc,id.desc", "limit": str(limit),
-        }
-        if cursor:
-            before, row_id = cursor
-            params["or"] = f"(created_at.lt.{before},and(created_at.eq.{before},id.lt.{row_id}))"
-        return self._request("GET", "/rest/v1/generation_jobs", params=params)
+        return self.rpc("get_prompt_history", {"p_user_id": user_id, "p_cutoff": cutoff,
+            "p_before": cursor[0] if cursor else None, "p_before_id": cursor[1] if cursor else None, "p_limit": limit})
+
+    def history_preview_jobs(self, user_id: str, job_ids: list[str], cutoff: str) -> list[dict[str, Any]]:
+        ids = list(dict.fromkeys(str(uuid.UUID(value)) for value in job_ids))[:50]
+        if not ids:
+            return []
+        return self._request("GET", "/rest/v1/generation_jobs", params={
+            "user_id": f"eq.{user_id}", "id": "in.(" + ",".join(ids) + ")",
+            "created_at": "gt." + cutoff, "status": "in.(succeeded,refunded)",
+            "select": "id,created_at,image_keys", "limit": str(len(ids)),
+        }) or []
 
     def delete_user(self, user_id: str) -> None:
         self._request("DELETE", f"/auth/v1/admin/users/{user_id}")
@@ -419,6 +422,12 @@ class SupabaseGateway:
 
     def admin_bookkeeping(self, from_date: date, to_date: date) -> dict[str, Any]:
         return self.rpc("get_admin_bookkeeping", {"p_from": from_date.isoformat(), "p_to": to_date.isoformat()})
+
+    def admin_music_overview(self, from_date: date, to_date: date, search: str = "", limit: int = 100) -> dict[str, Any]:
+        result = self.rpc("get_admin_music_overview", {"p_from": from_date.isoformat(), "p_to": to_date.isoformat(), "p_search": search[:160], "p_limit": min(max(limit, 1), 100)})
+        if not isinstance(result, dict):
+            raise SupabaseError("MUSIC_METRICS_UNAVAILABLE", "音乐统计暂时不可用", 503)
+        return result
 
     def save_admin_bookkeeping(self, admin_user_id: str, scope: str, stat_date: str | None,
                                recharge_text: str, cost_text: str, note: str, revision: int) -> dict[str, Any]:
@@ -493,9 +502,9 @@ class SupabaseGateway:
             {"p_admin_user_id": admin_user_id, "p_id": announcement_id},
         )
 
-    def admin_adjust_credits(self, admin_user_id: str, user_id: str, delta: int, reason: str, idempotency_key: str) -> dict[str, Any]:
+    def admin_adjust_credits(self, admin_user_id: str, user_id: str, delta: str, reason: str, idempotency_key: str) -> dict[str, Any]:
         return self.rpc(
-            "admin_adjust_credits",
+            "admin_adjust_credit_amount",
             {
                 "p_admin_user_id": admin_user_id,
                 "p_user_id": user_id,

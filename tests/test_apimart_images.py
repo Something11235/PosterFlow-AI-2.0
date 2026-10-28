@@ -1,3 +1,4 @@
+import base64
 import io
 import json
 import unittest
@@ -19,6 +20,54 @@ def response(payload, status=200):
 
 
 class ImageProtocolTests(unittest.TestCase):
+    def reference_data(self):
+        image = io.BytesIO()
+        Image.new("RGB", (8, 8), "blue").save(image, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(image.getvalue()).decode(), image.getvalue()
+
+    def test_reference_upload_accepts_documented_and_actual_media_hosts(self):
+        encoded, raw = self.reference_data()
+        for host in ("upload.apimart.ai", "getapib.org"):
+            url = "https://" + host + "/image/reference.png"
+            with self.subTest(host=host), patch.object(provider.requests, "request", return_value=response({"url": url})) as request:
+                self.assertEqual(provider.upload_reference("synthetic-key", encoded), url)
+                request.assert_called_once()
+                self.assertEqual(request.call_args.args, ("POST", provider.BASE + "/uploads/images"))
+                self.assertEqual(request.call_args.kwargs["files"]["file"][1:], (raw, "image/png"))
+                self.assertNotIn("Content-Type", request.call_args.kwargs["headers"])
+
+    def test_reference_upload_rejects_untrusted_or_malformed_urls(self):
+        encoded, _ = self.reference_data()
+        urls = [None, ["https://getapib.org/image.png"], "http://getapib.org/image.png", "https://getapib.org.evil.invalid/image.png", "https://getapib.org@evil.invalid/image.png", "https://user:key@getapib.org/image.png", "https://getapib.org:bad/image.png", "https://getapib.org:444/image.png", "https://getapib.org/image.png#fragment", "https://getapib.org/", "https://getapib.org/image.png\n", "https://127.0.0.1/image.png"]
+        for url in urls:
+            with self.subTest(url=url), patch.object(provider, "api_request", return_value={"url": url}):
+                with self.assertRaises(provider.ImageTaskError) as error:
+                    provider.upload_reference("synthetic-key", encoded)
+                self.assertEqual(error.exception.code, "REFERENCE_UPLOAD_FAILED")
+                self.assertFalse(error.exception.uncertain)
+
+    def test_reference_upload_errors_never_claim_paid_submission_unknown(self):
+        encoded, _ = self.reference_data()
+        for status in (401, 413, 429, 500):
+            with self.subTest(status=status), patch.object(provider.requests, "request", return_value=response({}, status)) as request:
+                with self.assertRaises(provider.ImageTaskError) as error:
+                    provider.upload_reference("synthetic-key", encoded)
+                self.assertEqual(error.exception.code, "REFERENCE_UPLOAD_FAILED")
+                self.assertFalse(error.exception.uncertain)
+                request.assert_called_once()
+        with patch.object(provider.requests, "request", side_effect=requests.Timeout("private-url")):
+            with self.assertRaises(provider.ImageTaskError) as error:
+                provider.upload_reference("synthetic-key", encoded)
+            self.assertFalse(error.exception.uncertain)
+            self.assertNotIn("private-url", str(error.exception))
+
+    def test_invalid_reference_is_not_uploaded(self):
+        with patch.object(provider, "api_request") as upload:
+            with self.assertRaises(provider.ImageTaskError) as error:
+                provider.upload_reference("synthetic-key", "not-image-data")
+            self.assertEqual(error.exception.code, "REFERENCE_IMAGE_INVALID")
+            upload.assert_not_called()
+
     def test_documented_models_and_fields(self):
         for model in provider.MODELS:
             body = provider.build_request(model, {"prompt": "猫", "count": 1, "size": "landscape_16_9"})
@@ -26,7 +75,7 @@ class ImageProtocolTests(unittest.TestCase):
             self.assertNotIn("quality", body)
             self.assertNotIn("input_references", body)
             self.assertEqual(body.get("aspect_ratio") or body.get("size"), "16:9")
-        self.assertEqual(provider.build_request("grok-imagine-image-2.0", {"prompt": "@图1 @图3", "resolution": "2K"}, ["one", "two", "three"])["prompt"], "<IMAGE_0> <IMAGE_2>")
+        self.assertEqual(provider.build_request("gemini-nano-banana-2.1", {"prompt": "@图1"}, ["one"])["image_urls"], ["one"])
 
     def test_model_capabilities_reject_before_paid_calls(self):
         invalid = [
@@ -34,7 +83,7 @@ class ImageProtocolTests(unittest.TestCase):
             ("grok-imagine-image-2.0", {"prompt": "cat"}, ["ref"] * 4),
             ("nano-banana-pro", {"prompt": "cat", "count": 2}, []),
             ("grok-imagine-2.0-ext", {"prompt": "cat", "size": "wide_21_9"}, []),
-            ("grok-imagine-image-2.0", {"prompt": "cat", "resolution": "4K"}, []),
+            ("gemini-nano-banana-2.1", {"prompt": "cat", "resolution": "8K"}, []),
             ("gemini-nano-banana-2.1", {"prompt": "cat", "mask_b64": "mask"}, []),
         ]
         for model, data, references in invalid:
@@ -42,7 +91,7 @@ class ImageProtocolTests(unittest.TestCase):
                 provider.build_request(model, data, references)
 
     def test_provider_body_whitelist_omits_secrets_and_callbacks(self):
-        body = provider.build_request("nano-banana-pro", {"prompt": "cat", "api_key": "sentinel", "webhook": "https://invalid.test", "quality": "high", "provider": "override"})
+        body = provider.build_request("gemini-nano-banana-2.1", {"prompt": "cat", "api_key": "sentinel", "webhook": "https://invalid.test", "quality": "high", "provider": "override"})
         self.assertEqual(set(body), {"model", "prompt", "n", "size", "resolution"})
         self.assertNotIn("sentinel", json.dumps(body))
 
@@ -104,8 +153,8 @@ class ImageRouteTests(unittest.TestCase):
     def setUp(self):
         self.client = server.app.test_client()
         self.headers = {"X-Billing-Mode": "platform"}
-        self.job = {"id": "33333333-3333-4333-8333-333333333333", "request_id": REQUEST, "model": "nano-banana-pro", "billing_mode": "platform", "status": "submitted", "requested_count": 1, "image_keys": [], "provider_task_id": TASK, "created_at": "2026-10-23T00:00:00+00:00"}
-        self.body = {"platform_model": "nano-banana-pro", "request_id": REQUEST, "prompt": "cat"}
+        self.job = {"id": "33333333-3333-4333-8333-333333333333", "request_id": REQUEST, "model": "gemini-nano-banana-2.1", "billing_mode": "platform", "status": "submitted", "requested_count": 1, "image_keys": [], "provider_task_id": TASK, "created_at": "2026-10-23T00:00:00+00:00"}
+        self.body = {"platform_model": "gemini-nano-banana-2.1", "request_id": REQUEST, "prompt": "cat"}
 
     def test_duplicate_submit_never_calls_provider_twice(self):
         store = Mock()
@@ -119,8 +168,11 @@ class ImageRouteTests(unittest.TestCase):
         with patch.dict("os.environ", {"APIMART_IMAGE_API_KEY": "synthetic-key"}), patch.object(server, "require_authenticated_user", return_value=Mock(id=USER)), patch.object(server, "enforce_rate_limit"), patch.object(routes, "ImageStore") as store:
             result = self.client.post("/api/apimart-images/generations", json=self.body, headers={**self.headers, "X-Provider-Api-Key": "synthetic-other"})
             self.assertEqual(result.status_code, 400)
-            result = self.client.post("/api/apimart-images/generations", json={**self.body, "count": 2}, headers=self.headers)
+            result = self.client.post("/api/apimart-images/generations", json={**self.body, "count": 5}, headers=self.headers)
             self.assertEqual(result.status_code, 400)
+            for model in ("nano-banana-pro",):
+                result = self.client.post("/api/apimart-images/generations", json={**self.body, "platform_model": model}, headers=self.headers)
+                self.assertEqual(result.status_code, 400)
             store.assert_not_called()
 
     def test_unknown_submission_is_retained_not_refunded(self):
@@ -168,11 +220,32 @@ class ImageRouteTests(unittest.TestCase):
 
     def test_reference_upload_failure_refunds_without_submitting_generation(self):
         store = Mock();store.begin.return_value = {"existing": False, "job": self.job}
-        with patch.dict("os.environ", {"APIMART_IMAGE_API_KEY": "synthetic-key"}), patch.object(server, "require_authenticated_user", return_value=Mock(id=USER)), patch.object(server, "enforce_rate_limit"), patch.object(routes, "ImageStore", return_value=store), patch.object(server, "validate_reference_images_b64", return_value=["synthetic-base64"]), patch.object(provider, "upload_reference", side_effect=provider.ImageTaskError("UPLOAD_FAILED", "upload failed", 502)), patch.object(provider, "submit") as submit:
+        with patch.dict("os.environ", {"APIMART_IMAGE_API_KEY": "synthetic-key"}), patch.object(server, "require_authenticated_user", return_value=Mock(id=USER)), patch.object(server, "enforce_rate_limit"), patch.object(routes, "ImageStore", return_value=store), patch.object(server, "validate_reference_images_b64", return_value=["synthetic-base64"]), patch.object(provider, "upload_reference", side_effect=provider.ImageTaskError("REFERENCE_UPLOAD_FAILED", "upload failed", 502)), patch.object(provider, "submit") as submit:
             result = self.client.post("/api/apimart-images/generations", json=self.body, headers=self.headers)
         self.assertEqual(result.status_code, 502)
         self.assertEqual(store.apply.call_args.args[2], "failed")
+        self.assertEqual(result.json["phase"], "reference_upload")
+        self.assertFalse(result.json["generation_submitted"])
+        self.assertFalse(result.json["submission_unknown"])
+        self.assertNotIn("提示词", result.json["detail"])
         submit.assert_not_called()
+
+    def test_reference_models_submit_actual_uploaded_url_after_success(self):
+        image = io.BytesIO(); Image.new("RGB", (8, 8), "blue").save(image, format="PNG")
+        encoded = base64.b64encode(image.getvalue()).decode()
+        for model in ("gemini-nano-banana-2.1", "grok-imagine-image-2.0"):
+            store = Mock(); job = {**self.job, "model": model}
+            store.begin.return_value = {"existing": False, "job": job}
+            store.apply.return_value = {"job": job}
+            media_url = "https://getapib.org/image/reference.png"
+            with self.subTest(model=model), patch.dict("os.environ", {"APIMART_IMAGE_API_KEY": "synthetic-key"}), patch.object(server, "require_authenticated_user", return_value=Mock(id=USER)), patch.object(server, "enforce_rate_limit"), patch.object(routes, "ImageStore", return_value=store), patch.object(server, "validate_reference_images_b64", return_value=[encoded]), patch.object(provider.requests, "request", side_effect=[response({"url": media_url}), response({"code": 200, "data": [{"task_id": TASK}]})]) as request:
+                result = self.client.post("/api/apimart-images/generations", json={**self.body, "platform_model": model}, headers=self.headers)
+            self.assertEqual(result.status_code, 202)
+            self.assertEqual(request.call_count, 2)
+            self.assertTrue(request.call_args_list[0].args[1].endswith("/uploads/images"))
+            self.assertTrue(request.call_args_list[1].args[1].endswith("/images/generations"))
+            self.assertEqual(request.call_args_list[1].kwargs["json"]["image_urls"], [media_url])
+            self.assertEqual([call.args[2] for call in store.apply.call_args_list], ["submitted"])
 
     def test_expired_previous_image_is_rejected_before_reservation(self):
         with patch.dict("os.environ", {"APIMART_IMAGE_API_KEY": "synthetic-key"}), patch.object(server, "require_authenticated_user", return_value=Mock(id=USER)), patch.object(server, "enforce_rate_limit"), patch.object(server, "stored_image_to_base64", return_value=None), patch.object(routes, "ImageStore") as store:
@@ -184,3 +257,48 @@ class ImageRouteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GrokReferenceTests(unittest.TestCase):
+    def test_official_reference_protocol_and_no_text_only_quality(self):
+        plain = provider.build_request("grok-imagine-image-2.0", {"prompt": "cat", "resolution": "2K"})
+        self.assertNotIn("resolution", plain)
+        self.assertEqual(plain["aspect_ratio"], "auto")
+        self.assertNotIn("size", plain)
+        edited = provider.build_request("grok-imagine-image-2.0", {"prompt": "cat", "quality": "medium"}, ["one", "two", "three"])
+        self.assertEqual(len(edited["image_urls"]), 3)
+        self.assertNotIn("quality", edited)
+        self.assertNotIn("resolution", edited)
+        for model in ("grok-imagine-image-2.0", "grok-imagine-2.0-ext"):
+            for stale_resolution in ("1K", "2K", "4K", "quality", "auto"):
+                self.assertNotIn("resolution", provider.build_request(model, {"prompt": "cat", "resolution": stale_resolution}))
+        with self.assertRaises(provider.ImageTaskError):
+            provider.build_request("grok-imagine-image-2.0", {"prompt": "cat"}, ["one"] * 4)
+
+    def test_reservation_uses_validated_reference_count_not_client_price(self):
+        body = provider.build_request("grok-imagine-image-2.0", {"prompt": "cat", "unit_credit_cost": 0, "reference_count": 0}, ["one", "two"])
+        store = routes.ImageStore.__new__(routes.ImageStore)
+        store.rpc = Mock(return_value={"ok": True})
+        store.begin("user-" + USER, USER, REQUEST, "platform", "grok-imagine-image-2.0", body, "cat")
+        name, args = store.rpc.call_args.args
+        self.assertEqual(name, "begin_apimart_image_job_v3")
+        self.assertEqual(args["p_reference_count"], 2)
+        self.assertIsNone(args["p_resolution"])
+        self.assertNotIn("unit_credit_cost", args)
+        self.assertNotIn("one", args["p_fingerprint"])
+
+    def test_nano_reservation_uses_validated_resolution_and_ignores_client_price(self):
+        for resolution in ("1K", "2K", "4K"):
+            with self.subTest(resolution=resolution):
+                body = provider.build_request("gemini-nano-banana-2.1", {"prompt": "cat", "resolution": resolution, "unit_credit_cost": 0, "credit_cost": 0}, ["one"])
+                store = routes.ImageStore.__new__(routes.ImageStore)
+                store.rpc = Mock(return_value={"ok": True})
+                store.begin("user-" + USER, USER, REQUEST, "platform", "gemini-nano-banana-2.1", body, "cat")
+                name, args = store.rpc.call_args.args
+                self.assertEqual(name, "begin_apimart_image_job_v3")
+                self.assertEqual(args["p_resolution"], resolution)
+                self.assertEqual(args["p_reference_count"], 1)
+                self.assertNotIn("credit_cost", body)
+                self.assertNotIn("unit_credit_cost", args)
+        with self.assertRaises(provider.ImageTaskError):
+            provider.build_request("gemini-nano-banana-2.1", {"prompt": "cat", "resolution": "8K", "credit_cost": 1})

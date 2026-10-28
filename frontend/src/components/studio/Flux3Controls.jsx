@@ -1,0 +1,15 @@
+import React from 'react';
+import {SlidersHorizontal} from 'lucide-react';
+import {FLUX_RATIOS} from '../../lib/flux3';
+
+export function Flux3Workflow({values,onChange,drafts}){
+  return <><label className="studio-field"><span>制作流程</span><select aria-label="制作流程" value={values.workflow || 'generate'} onChange={e=>onChange({workflow:e.target.value,draft:false,draft_request_id:'',...e.target.value==='draft'?{resolution:'hd'}:{}})}><option value="generate">直接生成</option><option value="draft">先生成 HD 草稿</option><option value="final">将草稿转为正式片</option></select><small>草稿与正式片各自收费；转正式片不会抵扣草稿费用。</small></label>{values.workflow==='final'&&<label className="studio-field"><span>选择已完成 FLUX 草稿</span><select aria-label="选择已完成 FLUX 草稿" value={values.draft_request_id || ''} onChange={e=>onChange({draft_request_id:e.target.value})}><option value="">请选择本人已完成并结算的草稿</option>{drafts.map(j=><option key={j.request_id} value={j.request_id}>{new Date(j.created_at).toLocaleString('zh-CN',{hour12:false})} · {j.requested_duration} 秒{j.pricing_profile?.continuation?' · 视频续写':''}</option>)}</select><small>仅能修改清晰度；提示词、时长、素材、声音和审核设置全部继承草稿。</small></label>}</>;
+}
+export default function Flux3Controls({values,onChange,final,source}){
+ return <section className="video-generation-controls video-composer-card" aria-label="视频生成参数"><h2 className="video-section-title"><SlidersHorizontal size={18} aria-hidden="true"/>生成参数</h2>
+   {!final&&<fieldset className="video-ratios"><legend>画幅</legend><div role="group" aria-label="画幅">{FLUX_RATIOS.map(r=><button type="button" className="video-ratio" key={r} aria-pressed={values.aspect_ratio===r} onClick={()=>onChange({aspect_ratio:r})}>{r==='auto'?'自动':r}</button>)}</div></fieldset>}
+   <div className="video-duration-quality"><label className="studio-field"><span>清晰度</span><select aria-label="清晰度" value={values.resolution} onChange={e=>onChange({resolution:e.target.value})}>{(values.workflow==='draft'?['hd']:['hd','fhd']).map(r=><option key={r} value={r}>{r.toUpperCase()}{r==='hd'?' · 约 720P':' · 约 1080P'}</option>)}</select></label>
+   {final?<p className="music-reference-note">时长 {source?.requested_duration || '—'} 秒，其他参数与素材继承草稿；本次正式片单独收费。</p>:<label className="studio-field"><span>生成时长</span><input aria-label="生成时长" type="number" min="5" max="20" step="1" value={values.duration} onChange={e=>onChange({duration:e.target.value})}/><small>5–20 秒整数，不提供自动时长。</small></label>}</div>
+   {!final&&<><label className="music-check"><input type="checkbox" checked={Boolean(values.audio)} onChange={e=>onChange({audio:e.target.checked})}/>生成同步声音</label><label className="studio-field"><span>审核容忍度</span><select aria-label="审核容忍度" value={values.safety_tolerance} onChange={e=>onChange({safety_tolerance:Number(e.target.value)})}>{[0,1,2,3,4].map(n=><option key={n} value={n}>{n}{n===2?' · 默认':''}</option>)}</select><small>数值越高容忍度越高，仍须通过服务审核。</small></label><label className="music-check"><input type="checkbox" checked={Boolean(values.nsfw_check)} onChange={e=>onChange({nsfw_check:e.target.checked})}/>内容预检查 · 可能增加费用</label><p className="music-reference-note">关闭声音不降价；续写可能返回较短视频，最终按实际费用结算。草稿仅支持 HD。</p></>}
+ </section>;
+}

@@ -1,0 +1,62 @@
+begin;
+insert into auth.users(id,email,email_confirmed_at) values('ce000000-0000-4000-8000-000000000001','omni-fixture@example.invalid',now());
+select public.ensure_signup_bonus('ce000000-0000-4000-8000-000000000001');
+update public.credit_accounts set balance=1000,total_spent=0,total_refunded=0 where user_id='ce000000-0000-4000-8000-000000000001';
+do $$
+declare u uuid:='ce000000-0000-4000-8000-000000000001';o text:='user-'||u::text;rid uuid:=gen_random_uuid();source_id uuid;r jsonb;tx bigint;b numeric;
+ p jsonb:='{"model":"gemini-omni-1.1-flash","prompt":"fixture","resolution":"720p","aspect_ratio":"16:9","task":"auto"}';
+begin
+ assert private.omni_flash_charge(.88)=19.5 and private.omni_flash_charge(1)=22.5;
+ assert private.omni_flash_charge(.296)=7 and private.omni_flash_charge(1.32)=29.5 and private.omni_flash_charge(2.64)=58.5;
+ r:=public.begin_omni_flash_job(o,u,rid,'platform','generate',repeat('a',64),p,'[]');
+ assert (r->>'ok')::boolean and (r#>>'{job,estimated_credits}')::numeric=19.5 and (r#>>'{job,reserved_credits}')::numeric=31.5,r::text;
+ assert r#>>'{job,requested_duration}'='-1' and r#>>'{job,pricing_profile,markup}'='1.2';
+ assert (r->>'balance')::numeric=968.5;
+ r:=public.begin_omni_flash_job(o,u,rid,'platform','generate',repeat('a',64),p,'[]');assert (r->>'existing')::boolean;
+ assert (select balance from public.credit_accounts where user_id=u)=968.5;
+ r:=public.begin_omni_flash_job(o,u,rid,'platform','generate',repeat('b',64),p,'[]');assert r->>'code'='VIDEO_REQUEST_CONFLICT';
+ r:=public.apply_seedance20_fast_job(o,rid,'completed',null,null,'[]',.88);assert r->>'code'='VIDEO_NOT_FOUND';
+ r:=public.apply_omni_flash_job('user-other',rid,'completed',null,null,'[]',.88);assert r->>'code'='VIDEO_NOT_FOUND';
+ r:=public.apply_omni_flash_job(o,rid,'submitted','task_omni_sql_fixture');
+ r:=public.apply_omni_flash_job(o,rid,'completed');assert r#>>'{job,billing_status}'='awaiting_provider';
+ assert (select total_spent from public.credit_accounts where user_id=u)=0;
+ r:=public.apply_omni_flash_job(o,rid,'completed',null,null,'[]',.88);assert (r#>>'{job,charged_credits}')::numeric=19.5 and (r->>'balance')::numeric=980.5;
+ tx:=(select count(*) from public.credit_transactions where user_id=u);
+ r:=public.apply_omni_flash_job(o,rid,'completed',null,null,'[]',100);
+ r:=public.apply_omni_flash_job(o,rid,'failed');assert (r#>>'{job,charged_credits}')::numeric=19.5;
+ assert (select count(*) from public.credit_transactions where user_id=u)=tx;
+ source_id:=rid;
+ rid:=gen_random_uuid();
+ r:=public.begin_omni_flash_job(o,u,rid,'platform','generate',repeat('c',64),p||jsonb_build_object('continue_request_id',source_id,'task','extend'),'[]');assert (r->>'ok')::boolean,r::text;
+ r:=public.apply_omni_flash_job(o,rid,'submission_unknown');assert r#>>'{job,billing_status}'='reserved';
+ r:=public.apply_omni_flash_job(o,rid,'failed',null,'VIDEO_PROVIDER_BUSY');assert r#>>'{job,billing_status}'='refunded';
+ tx:=(select count(*) from public.credit_transactions where user_id=u);
+ r:=public.apply_omni_flash_job(o,rid,'failed');assert (select count(*) from public.credit_transactions where user_id=u)=tx;
+ -- Invalid intent/media/ownership cannot reserve money.
+ b:=(select balance from public.credit_accounts where user_id=u);
+ r:=public.begin_omni_flash_job(o,u,gen_random_uuid(),'platform','generate',repeat('a',64),p||'{"duration":5}','[]');assert r->>'code'='INVALID_VIDEO_INPUT';
+ r:=public.begin_omni_flash_job(o,u,gen_random_uuid(),'platform','generate',repeat('a',64),p||'{"resolution":"480p"}','[]');assert r->>'code'='INVALID_VIDEO_INPUT';
+ r:=public.begin_omni_flash_job(o,u,gen_random_uuid(),'platform','asset_review',repeat('a',64),p,'[]');assert r->>'code'='INVALID_VIDEO_INPUT';
+ r:=public.begin_omni_flash_job(o,u,gen_random_uuid(),'platform','generate',repeat('a',64),p,'[{"id":"a","kind":"audio","duration_ms":3000}]');assert r->>'code'='VIDEO_REFERENCE_INVALID';
+ r:=public.begin_omni_flash_job(o,u,gen_random_uuid(),'platform','generate',repeat('a',64),p,'[{"id":"v","kind":"video","duration_ms":10001}]');assert r->>'code'='VIDEO_REFERENCE_DURATION';
+ r:=public.begin_omni_flash_job(o,u,gen_random_uuid(),'platform','generate',repeat('a',64),p,'[{"id":"i","kind":"image","role":"last_frame"}]');assert r->>'code'='VIDEO_REFERENCE_ROLE';
+ r:=public.begin_omni_flash_job(o,u,gen_random_uuid(),'platform','generate',repeat('a',64),p||jsonb_build_object('continue_request_id',source_id),'[{"id":"v","kind":"video","duration_ms":3000}]');assert r->>'code'='VIDEO_CONTINUATION_INVALID';
+ r:=public.begin_omni_flash_job(o,u,gen_random_uuid(),'platform','generate',repeat('a',64),p||jsonb_build_object('continue_request_id',gen_random_uuid()),'[]');assert r->>'code'='VIDEO_CONTINUATION_INVALID';
+ r:=public.begin_omni_flash_job(o,u,gen_random_uuid(),'platform','generate',repeat('a',64),p||'{"task":"edit"}','[]');assert r->>'code'='VIDEO_TASK_CONSTRAINT';
+ r:=public.begin_omni_flash_job(o||'-wrong',u,gen_random_uuid(),'platform','generate',repeat('a',64),p,'[]');assert r->>'code'='INVALID_VIDEO_INPUT';
+ assert (select balance from public.credit_accounts where user_id=u)=b and (select count(*) from public.credit_transactions where user_id=u)=tx;
+ -- Real-cost snapshot survives retries, and cannot deliver while awaiting topup.
+ rid:=gen_random_uuid();r:=public.begin_omni_flash_job(o,u,rid,'platform','generate',repeat('d',64),p,'[]');
+ update public.credit_accounts set balance=0 where user_id=u;
+ r:=public.apply_omni_flash_job(o,rid,'completed',null,null,'[]',2);assert r#>>'{job,billing_status}'='awaiting_balance' and (r->>'required_credits')::numeric=13;
+ r:=public.begin_omni_flash_job(o,u,gen_random_uuid(),'platform','generate',repeat('e',64),p,'[]');assert r->>'code'='VIDEO_UNSETTLED_BALANCE';
+ update public.credit_accounts set balance=13 where user_id=u;
+ r:=public.apply_omni_flash_job(o,rid,'completed',null,null,'[]',.1);assert r#>>'{job,billing_status}'='settled' and (r#>>'{job,charged_credits}')::numeric=44.5;
+ -- BYOK is isolated by key/endpoint scope, with zero website charge even without USD.
+ rid:=gen_random_uuid();r:=public.begin_omni_flash_job(o||'-'||repeat('a',64),u,rid,'own_key','generate',repeat('a',64),p,'[]');assert (r->>'ok')::boolean;
+ r:=public.apply_omni_flash_job(o||'-'||repeat('a',64),rid,'completed');assert r#>>'{job,billing_status}'='not_applicable' and (r#>>'{job,charged_credits}')::numeric=0;
+ assert not has_function_privilege('anon','public.begin_omni_flash_job(text,uuid,uuid,text,text,text,jsonb,jsonb)','EXECUTE');
+ assert not has_function_privilege('authenticated','private.apply_omni_flash_job(text,uuid,text,text,text,jsonb,numeric,bigint)','EXECUTE');
+ assert has_function_privilege('service_role','public.apply_omni_flash_job(text,uuid,text,text,text,jsonb,numeric,bigint)','EXECUTE');
+end $$;
+rollback;

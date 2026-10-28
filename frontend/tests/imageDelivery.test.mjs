@@ -15,6 +15,40 @@ const signed = (url = directUrl) => Response.json({ url, expires_in: 3600 });
 beforeEach(() => clearImageUrlCache());
 afterEach(() => mock.restoreAll());
 
+test("upstream original failures use a separately signed backup without sending credentials to media hosts", async()=>{
+  for(const failure of ['network',403,404,503,'html','jpeg']){
+    clearImageUrlCache();let upstreamReads=0,backupSigns=0;
+    mock.method(globalThis,'fetch',async(url,init)=>{
+      if(url.includes('/url')){
+        if(url.includes('source=backup')){backupSigns++;return signed();}
+        return Response.json({url:'https://upload.apimart.ai/original.png',source:'upstream',expires_in:300});
+      }
+      assert.equal(init.headers,undefined);assert.equal(init.credentials,'omit');
+      if(url.includes('upload.apimart.ai')){
+        upstreamReads++;if(failure==='network')throw Error('CORS/network');
+        if(failure==='html')return new Response('<html>bad</html>',{headers:{'Content-Type':'text/html'}});
+        if(failure==='jpeg')return new Response('jpeg-data',{headers:{'Content-Type':'image/jpeg'}});
+        return new Response('expired',{status:failure});
+      }
+      return new Response('backup-original',{headers:{'Content-Type':'image/png'}});
+    });
+    assert.equal(await (await fetchImageBlob('test.png',options)).text(),'backup-original');
+    assert.equal(await (await fetchImageBlob('test.png',options)).text(),'backup-original');
+    assert.equal(upstreamReads,1);assert.equal(backupSigns,1);mock.restoreAll();
+  }
+});
+
+test("working upstream avoids backup and the backup-download button deliberately bypasses upstream",async()=>{
+ let backupSigns=0;
+ const png=new Uint8Array([137,80,78,71,13,10,26,10,1,2,3]);
+ mock.method(globalThis,'fetch',async(url,init)=>{
+   if(url.includes('/url')){if(url.includes('source=backup')){backupSigns++;return signed();}return Response.json({url:'https://upload.apimart.ai/one.png',source:'upstream',expires_in:300});}
+   assert.equal(init.headers,undefined);return new Response(png,{headers:{'Content-Type':'image/png'}});
+ });
+ assert.deepEqual(new Uint8Array(await (await fetchImageBlob('test.png',options)).arrayBuffer()),png);assert.equal(backupSigns,0);
+ assert.ok((await fetchImageDownloadUrl('test.png',options)).includes('supabase.co'));assert.equal(backupSigns,1);
+});
+
 test("preview, modal and canvas reuse a URL and coalesce concurrent signing", async () => {
   const fetcher = mock.method(globalThis, "fetch", async () => signed());
   const urls = await Promise.all([fetchImageUrl("test.png", options), fetchImageUrl("test.png", options)]);
@@ -219,6 +253,17 @@ async function waitFor(predicate) {
   assert.fail("Expected image request did not start");
 }
 
+test("a stalled upstream original times out after eight seconds and uses its stored backup",async(t)=>{
+ t.mock.timers.enable({apis:['setTimeout']});let started=false,backups=0;
+ mock.method(globalThis,'fetch',async(url)=>{
+   if(url.includes('/url')){if(url.includes('source=backup')){backups++;return signed();}return Response.json({url:'https://upload.apimart.ai/timeout.png',source:'upstream',expires_in:300});}
+   if(url.includes('upload.apimart.ai')){started=true;return new Promise(()=>{});}
+   return new Response('original-backup');
+ });
+ const pending=fetchImageBlob('test.png',options);await waitFor(()=>started);t.mock.timers.tick(8000);
+ assert.equal(await (await pending).text(),'original-backup');assert.equal(backups,1);
+});
+
 test("a stalled signing request is aborted and releases callers to the authenticated fallback", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   let signingSignal;
@@ -285,7 +330,7 @@ test("a stalled original rejects both preview and download, then permits a fresh
   release(new Response("late-stale-image"));
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(await fetchImageBlob("read-timeout.png", options), fresh);
-  assert.equal(reads, 2);
+  assert.equal(reads, 3); // Failed direct read, failed relay, fresh direct retry.
 });
 
 test("the original deadline covers the complete response body, not only response headers", async (t) => {
@@ -294,6 +339,7 @@ test("the original deadline covers the complete response body, not only response
   let signal;
   mock.method(globalThis, "fetch", async (url, init) => {
     if (url.includes("/url")) return signed();
+    if (url.includes("/content?")) return new Response("relay unavailable", { status: 503 });
     signal = init.signal;
     return { ok: true, status: 200, blob: () => { bodyStarted = true; return new Promise(() => {}); } };
   });

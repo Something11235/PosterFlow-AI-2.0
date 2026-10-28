@@ -1,7 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Clipboard, FileImage, FileText, Loader2, Paperclip, Plus, Send, Trash2, X } from "lucide-react";
+import { Clipboard, ExternalLink, FileImage, FileText, Loader2, Paperclip, Plus, Send, Trash2, X } from "lucide-react";
+import { IMAGE_PROMPT_RESOURCE } from "../lib/promptResources";
 import { MAX_REFERENCE_IMAGES } from "../lib/provider";
 import { REFERENCE_FILE_ACCEPT, referenceFileKey } from "../lib/referenceSelection";
+
+import ImageModelSelect from "./ImageModelSelect";
 
 const PROMPT_CHARACTER_LIMIT = 6000;
 
@@ -19,11 +22,18 @@ function ReferenceThumbnail({ file, number }) {
 }
 
 export default function PromptEditor({
+  imageModel,
+  imageReferenceCount = 0,
+  onImageModelChange,
+  billingMode,
   prompt,
   onPromptChange,
   onGenerate,
   onOpenProvider,
   isGenerating,
+  generationLimitReached = false,
+  activeTaskCount = 0,
+  referenceLimit = MAX_REFERENCE_IMAGES,
   currentPrompt,
   referenceFiles = [],
   onReferenceAdd,
@@ -42,7 +52,9 @@ export default function PromptEditor({
   const [mentionHint, setMentionHint] = useState("");
   const charCount = Array.from(prompt.trim()).length;
   const promptTooLong = charCount > PROMPT_CHARACTER_LIMIT;
-  const generationDisabled = isGenerating || (providerConfigured && (!prompt.trim() || promptTooLong));
+  const referencesDisabled = referenceLimit === 0;
+  const tooManyReferences = !referencesDisabled && referenceFiles.length > referenceLimit;
+  const generationDisabled = providerConfigured && (isGenerating || generationLimitReached || !prompt.trim() || promptTooLong || tooManyReferences);
   const promptQuality = useMemo(() => {
     if (charCount > PROMPT_CHARACTER_LIMIT) return "超出限制";
     if (charCount > 180) return "信息充分";
@@ -51,7 +63,7 @@ export default function PromptEditor({
   }, [charCount]);
 
   const files = referenceFiles;
-  const referenceLimitReached = files.length >= MAX_REFERENCE_IMAGES;
+  const referenceLimitReached = referencesDisabled || files.length >= referenceLimit;
   const insertMention = (index) => {
     const mention = "@图" + (index + 1); const input = promptRef.current;
     const start = input?.selectionStart ?? prompt.length; const end = input?.selectionEnd ?? start;
@@ -76,6 +88,8 @@ export default function PromptEditor({
           <p className="text-xs font-medium text-text-secondary">{promptQuality}</p>
         </div>
       </div>
+
+      <ImageModelSelect model={imageModel} referenceCount={imageReferenceCount} billingMode={billingMode} onModelChange={onImageModelChange} onOpenProvider={onOpenProvider} />
 
       <div className="mb-4">
         <div className="mb-2 flex items-center justify-between gap-3">
@@ -108,16 +122,17 @@ export default function PromptEditor({
           className="min-h-52 w-full resize-y rounded-lg border border-border-default bg-bg-primary/78 px-4 py-3 text-base leading-7 text-text-primary placeholder:text-text-muted transition focus:border-accent/65"
         />
         {promptTooLong && <p id="prompt-length-warning" role="alert" className="mt-2 text-xs leading-5 text-error">提示词最多 6000 个字符，请精简后再生成。</p>}
+        <a href={IMAGE_PROMPT_RESOURCE.href} target="_blank" rel="noopener noreferrer" className="mt-2 inline-flex min-h-11 items-center gap-2 rounded-md border border-border-subtle px-3 text-xs text-accent transition hover:border-accent/40 hover:bg-accent/10">{IMAGE_PROMPT_RESOURCE.label}<ExternalLink size={14} aria-hidden="true" /></a>
       </div>
 
         <div className="mb-4" role="group" aria-label="参考图片管理">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <span className="flex items-center gap-2 text-sm font-medium text-text-secondary"><Paperclip size={16} />参考素材</span>
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-muted"><span className="tabular-nums">{files.length}/{MAX_REFERENCE_IMAGES} 张</span><span>单张最多 16 MB</span></div>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-muted"><span className="tabular-nums">{referencesDisabled ? "当前模型仅支持文生图" : `${files.length}/${referenceLimit} 张`}</span><span>单张最多 16 MB</span></div>
           </div>
           {files.length > 0 && <div className="mb-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
             {files.map((file, index) => <div key={referenceFileKey(file)} className="relative min-w-0 rounded-md border border-border-subtle bg-bg-primary/60 p-1.5">
-              <button type="button" onClick={() => insertMention(index)} aria-label={`插入 @图${index + 1}：${file.name}`} className="block w-full min-w-0 rounded text-left transition hover:bg-bg-elevated">
+              <button type="button" disabled={referencesDisabled} onClick={() => insertMention(index)} aria-label={`插入 @图${index + 1}：${file.name}`} className="block w-full min-w-0 rounded text-left transition hover:bg-bg-elevated disabled:opacity-40">
                 <div className="relative"><ReferenceThumbnail file={file} number={index + 1} /><span className="absolute left-1 top-1 rounded bg-black/75 px-1.5 py-0.5 text-[11px] font-semibold text-white">图{index + 1}</span></div>
                 <p className="mt-1 truncate text-xs text-text-primary" title={file.name}>{file.name}</p><p className="truncate text-[11px] text-accent">点击插入 @图{index + 1}</p>
               </button>
@@ -130,7 +145,7 @@ export default function PromptEditor({
             disabled={referenceLimitReached}
             className={`flex w-full items-center justify-center rounded-lg border border-dashed border-border-default bg-bg-tertiary/70 p-3 text-text-muted transition hover:border-accent/45 hover:bg-bg-elevated disabled:cursor-not-allowed disabled:opacity-55 ${files.length ? "min-h-12" : "min-h-24"}`}
           >
-            {files.length ? <span className="inline-flex items-center gap-2 text-sm"><Plus size={17} />{referenceLimitReached ? `已达 ${MAX_REFERENCE_IMAGES} 张上限` : "继续添加参考图"}</span> : (
+            {referencesDisabled ? <span className="text-sm">当前模型不支持上传参考图</span> : files.length ? <span className="inline-flex items-center gap-2 text-sm"><Plus size={17} />{referenceLimitReached ? `已达 ${referenceLimit} 张上限` : "继续添加参考图"}</span> : (
               <div className="flex flex-col items-center gap-2 text-text-muted">
                 <FileImage size={24} />
                 <span className="text-sm">上传参考图片</span>
@@ -144,10 +159,11 @@ export default function PromptEditor({
             aria-label="选择参考图片"
             className="hidden"
             multiple
+            disabled={referenceLimitReached}
             onChange={(event) => {
               const selected = Array.from(event.currentTarget.files || []);
               event.currentTarget.value = "";
-              if (selected.length) onReferenceAdd(selected);
+              if (!referenceLimitReached && selected.length) onReferenceAdd(selected);
             }}
           />
           {files.length > 0 && (
@@ -163,7 +179,8 @@ export default function PromptEditor({
               清空全部参考图
             </button>
           )}
-          <p className="mt-1 text-xs leading-5 text-text-muted">最多 {MAX_REFERENCE_IMAGES} 张，可分次追加，按顺序对应 @图1、@图2……。点击图片插入引用，点击右上角 × 单独删除。</p>
+          <p className="mt-1 text-xs leading-5 text-text-muted">{referencesDisabled ? "仅按文字生成。已选素材暂不参与本次生成，切回支持参考图的模型后可继续使用。" : `最多 ${referenceLimit} 张，可分次追加，按顺序对应 @图1、@图2……。点击图片插入引用，点击右上角 × 单独删除。`}</p>
+          {tooManyReferences && <p className="mt-1 text-xs text-gold" role="alert">当前模型最多支持 {referenceLimit} 张，请先删除多余参考图。</p>}
           {referenceFeedback?.text && <p className={`mt-2 break-words text-xs leading-5 ${referenceFeedback.warning ? "text-gold" : "text-text-muted"}`} role={referenceFeedback.warning ? "alert" : "status"}>{referenceFeedback.text}</p>}
           {mentionHint && <p className="mt-1 text-xs text-mint" role="status">{mentionHint}</p>}
         </div>
@@ -184,7 +201,7 @@ export default function PromptEditor({
         }`}
       >
         {isGenerating ? <Loader2 size={18} className="animate-spin-soft" /> : <Send size={18} />}
-        {isGenerating
+        {generationLimitReached ? "任务已满（3/3）" : isGenerating
           ? "正在生成"
           : !providerConfigured
             ? "配置服务并生成"
@@ -192,7 +209,7 @@ export default function PromptEditor({
               ? "局部重绘当前图片"
               : mode === "iterative"
                 ? "生成首张参考图"
-                : "生成图片"}
+                : activeTaskCount ? `继续生成（${activeTaskCount} 个进行中）` : "生成图片"}
       </button>
     </div>
   );

@@ -1,0 +1,51 @@
+-- Isolated runtime only; no production fixture writes.
+begin;
+insert into auth.users(id,email,email_confirmed_at) values ('33333333-3333-4333-8333-333333333333','grok-price-fixture@example.invalid',now());
+select public.ensure_signup_bonus('33333333-3333-4333-8333-333333333333');
+update public.credit_accounts set balance=100 where user_id='33333333-3333-4333-8333-333333333333';
+do $$
+declare u uuid:='33333333-3333-4333-8333-333333333333'; req uuid; r jsonb; t uuid; b integer; refs integer; a uuid; before_count bigint;
+begin
+ for refs in 0..3 loop
+  req:=gen_random_uuid();
+  select balance into b from public.credit_accounts where user_id=u;
+  r:=public.begin_apimart_image_job_v2('user-'||u,u,req,'platform','grok-imagine-image-2.0',3,repeat('a',64),'fixture',refs);
+  if r->>'ok'<>'true' or (r->>'balance')::numeric<>b-(case when refs=0 then 3 else 6 end) then raise exception 'wrong Grok reservation %, result %, starting %',refs,r,b; end if;
+  if (r->'job'->>'reference_count')::int<>refs or (r->'job'->>'unit_credit_cost')::int<>(case when refs=0 then 1 else 2 end) then raise exception 'snapshot missing';end if;
+  a:=(r->'job'->>'generation_job_id')::uuid;
+  r:=public.begin_apimart_image_job_v2('user-'||u,u,req,'platform','grok-imagine-image-2.0',3,repeat('a',64),'fixture',refs);
+  if r->>'existing'<>'true' then raise exception 'duplicate charged';end if;
+  r:=public.begin_apimart_image_job_v2('user-'||u,u,req,'platform','grok-imagine-image-2.0',3,repeat('a',64),'fixture',(case when refs=0 then 1 else 0 end));
+  if r->>'code'<>'IMAGE_REQUEST_CONFLICT' then raise exception 'reference conflict ignored';end if;
+  r:=public.apply_apimart_image_job('user-'||u,req,'submitted','task_grok_fixture_12345678');
+  t:=gen_random_uuid();r:=public.apply_apimart_image_job('user-'||u,req,'claim',null,'[]',t);
+  r:=public.apply_apimart_image_job('user-'||u,req,'completed',null,'["fixture.png"]',t);
+  if (r->>'balance')::numeric<>b-(case when refs=0 then 1 else 2 end) then raise exception 'partial settlement wrong';end if;
+  if (select charged_credits from public.generation_jobs where id=a)<>(case when refs=0 then 1 else 2 end) then raise exception 'wrong charge';end if;
+  r:=public.apply_apimart_image_job('user-'||u,req,'completed',null,'["fixture.png"]',t);
+  if (r->>'balance')::numeric<>b-(case when refs=0 then 1 else 2 end) then raise exception 'double settled';end if;
+ end loop;
+ select balance into b from public.credit_accounts where user_id=u;
+ req:=gen_random_uuid();r:=public.begin_apimart_image_job_v2('user-'||u,u,req,'platform','grok-imagine-image-2.0',2,repeat('b',64),'fixture',3);
+ r:=public.apply_apimart_image_job('user-'||u,req,'failed',null,'[]',null,'fixture-failed');
+ r:=public.apply_apimart_image_job('user-'||u,req,'failed');
+ if (r->>'balance')::numeric<>b then raise exception 'refund not once/full';end if;
+ r:=public.begin_apimart_image_job_v2('guest-own-key',null,gen_random_uuid(),'own_key','grok-imagine-image-2.0',1,repeat('c',64),'fixture',3);
+ if r->>'ok'<>'true' or r->'job'->>'unit_credit_cost'<>'0' then raise exception 'own key charged';end if;
+ r:=public.begin_apimart_image_job_v2('user-'||u,u,gen_random_uuid(),'platform','grok-imagine-image-2.0',1,repeat('d',64),'fixture',4);
+ if r->>'code'<>'INVALID_IMAGE_TASK' then raise exception 'four references accepted';end if;
+ r:=public.begin_apimart_image_job_v2('user-'||u,u,gen_random_uuid(),'platform','grok-imagine-2.0-ext',1,repeat('d',64),'fixture',1);
+ if r->>'code'<>'INVALID_IMAGE_TASK' then raise exception 'ext reference accepted';end if;
+ update public.credit_accounts set balance=1 where user_id=u;
+ select count(*) into before_count from public.credit_transactions where user_id=u;
+ req:=gen_random_uuid();r:=public.begin_apimart_image_job_v2('user-'||u,u,req,'platform','grok-imagine-image-2.0',1,repeat('e',64),'fixture',1);
+ if r->>'code'<>'CREDITS_INSUFFICIENT' or exists(select 1 from public.apimart_image_jobs where request_id=req) or (select count(*) from public.credit_transactions where user_id=u)<>before_count then raise exception 'insufficient reference job mutated money';end if;
+ r:=public.begin_apimart_image_job_v2('user-'||u,u,gen_random_uuid(),'platform','grok-imagine-image-2.0',1,repeat('f',64),'fixture',0);
+ if r->>'ok'<>'true' or (r->>'balance')::numeric<>0 then raise exception 'one credit text job denied';end if;
+ if has_function_privilege('anon','public.begin_apimart_image_job_v2(text,uuid,uuid,text,text,integer,text,text,integer)','execute') or has_function_privilege('authenticated','private.reserve_grok_reference_credits(uuid,uuid,integer,text,text,text,integer,integer)','execute') then raise exception 'public price RPC exposed';end if;
+end;
+$$;
+set local role service_role;
+select public.begin_apimart_image_job_v2('invalid',null,gen_random_uuid(),'platform','grok-imagine-image-2.0',1,repeat('a',64),'fixture',4);
+reset role;
+rollback;

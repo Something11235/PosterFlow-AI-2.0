@@ -1,0 +1,616 @@
+[
+  {
+    "id": "deepseek",
+    "name": "DeepSeek",
+    "images": [
+      {
+        "id": "deepseek-01",
+        "label": "图片 01",
+        "url": "/ai-companions/deepseek-01.jpg",
+        "width": 1273,
+        "height": 1739,
+        "bytes": 348249
+      },
+      {
+        "id": "deepseek-02",
+        "label": "图片 02",
+        "url": "/ai-companions/deepseek-02.jpg",
+        "width": 941,
+        "height": 1672,
+        "bytes": 244906
+      },
+      {
+        "id": "deepseek-03",
+        "label": "图片 03",
+        "url": "/ai-companions/deepseek-03.jpg",
+        "width": 1536,
+        "height": 2752,
+        "bytes": 575272
+      },
+      {
+        "id": "deepseek-04",
+        "label": "图片 04",
+        "url": "/ai-companions/deepseek-04.jpg",
+        "width": 1152,
+        "height": 2048,
+        "bytes": 368090
+      },
+      {
+        "id": "deepseek-05",
+        "label": "图片 05",
+        "url": "/ai-companions/deepseek-05.jpg",
+        "width": 3840,
+        "height": 2160,
+        "bytes": 903535
+      },
+      {
+        "id": "deepseek-06",
+        "label": "图片 06",
+        "url": "/ai-companions/deepseek-06.jpg",
+        "width": 2048,
+        "height": 1152,
+        "bytes": 376189
+      },
+      {
+        "id": "deepseek-07",
+        "label": "图片 07",
+        "url": "/ai-companions/deepseek-07.jpg",
+        "width": 2048,
+        "height": 1152,
+        "bytes": 349037
+      },
+      {
+        "id": "deepseek-08",
+        "label": "图片 08",
+        "url": "/ai-companions/deepseek-08.jpg",
+        "width": 2560,
+        "height": 1440,
+        "bytes": 463081
+      },
+      {
+        "id": "deepseek-09",
+        "label": "图片 09",
+        "url": "/ai-companions/deepseek-09.jpg",
+        "width": 1280,
+        "height": 2276,
+        "bytes": 336069
+      }
+    ]
+  },
+  {
+    "id": "chatgpt",
+    "name": "ChatGPT",
+    "images": [
+      {
+        "id": "chatgpt-01",
+        "label": "图片 01",
+        "url": "/ai-companions/chatgpt-01.jpg",
+        "width": 941,
+        "height": 1672,
+        "bytes": 307080
+      },
+      {
+        "id": "chatgpt-02",
+        "label": "图片 02",
+        "url": "/ai-companions/chatgpt-02.jpg",
+        "width": 3072,
+        "height": 5504,
+        "bytes": 1864541
+      },
+      {
+        "id": "chatgpt-03",
+        "label": "图片 03",
+        "url": "/ai-companions/chatgpt-03.jpg",
+        "width": 3840,
+        "height": 2160,
+        "bytes": 799097
+      },
+      {
+        "id": "chatgpt-04",
+        "label": "图片 04",
+        "url": "/ai-companions/chatgpt-04.jpg",
+        "width": 2048,
+        "height": 1152,
+        "bytes": 492562
+      },
+      {
+        "id": "chatgpt-05",
+        "label": "图片 05",
+        "url": "/ai-companions/chatgpt-05.jpg",
+        "width": 1080,
+        "height": 720,
+        "bytes": 229270
+      },
+      {
+        "id": "chatgpt-06",
+        "label": "图片 06",
+        "url": "/ai-companions/chatgpt-06.jpg",
+        "width": 941,
+        "height": 1672,
+        "bytes": 396074
+      }
+    ]
+  },
+  {
+    "id": "image-2",
+    "name": "Image-2",
+    "images": [
+      {
+        "id": "image-2-01",
+        "label": "图片 01",
+        "url": "/ai-companions/image-2-01.jpg",
+        "width": 1536,
+        "height": 2752,
+        "bytes": 721329
+      },
+      {
+        "id": "image-2-02",
+        "label": "图片 02",
+        "url": "/ai-companions/image-2-02.jpg",
+        "width": 2048,
+        "height": 1152,
+        "bytes": 493639
+      }
+    ]
+  },
+  {
+    "id": "codex",
+    "name": "Codex",
+    "images": [
+      {
+        "id": "codex-01",
+        "label": "图片 01",
+        "url": "/ai-companions/codex-01.jpg",
+        "width": 2048,
+        "height": 1152,
+        "bytes": 286775
+      }
+    ]
+  },
+  {
+    "id": "claude",
+    "name": "Claude",
+    "images": [
+      {
+        "id": "claude-01",
+        "label": "图片 01",
+        "url": "/ai-companions/claude-01.jpg",
+        "width": 941,
+        "height": 1672,
+        "bytes": 332725
+      },
+      {
+        "id": "claude-02",
+        "label": "图片 02",
+        "url": "/ai-companions/claude-02.jpg",
+        "width": 3072,
+        "height": 5504,
+        "bytes": 2092225
+      },
+      {
+        "id": "claude-03",
+        "label": "图片 03",
+        "url": "/ai-companions/claude-03.jpg",
+        "width": 1152,
+        "height": 2048,
+        "bytes": 459593
+      },
+      {
+        "id": "claude-04",
+        "label": "图片 04",
+        "url": "/ai-companions/claude-04.jpg",
+        "width": 3840,
+        "height": 2160,
+        "bytes": 785760
+      },
+      {
+        "id": "claude-05",
+        "label": "图片 05",
+        "url": "/ai-companions/claude-05.jpg",
+        "width": 1080,
+        "height": 720,
+        "bytes": 280039
+      },
+      {
+        "id": "claude-06",
+        "label": "图片 06",
+        "url": "/ai-companions/claude-06.jpg",
+        "width": 1440,
+        "height": 2560,
+        "bytes": 671483
+      }
+    ]
+  },
+  {
+    "id": "gemini",
+    "name": "Gemini",
+    "images": [
+      {
+        "id": "gemini-01",
+        "label": "图片 01",
+        "url": "/ai-companions/gemini-01.jpg",
+        "width": 941,
+        "height": 1672,
+        "bytes": 304349
+      },
+      {
+        "id": "gemini-02",
+        "label": "图片 02",
+        "url": "/ai-companions/gemini-02.jpg",
+        "width": 3072,
+        "height": 5504,
+        "bytes": 1762789
+      },
+      {
+        "id": "gemini-03",
+        "label": "图片 03",
+        "url": "/ai-companions/gemini-03.jpg",
+        "width": 1080,
+        "height": 720,
+        "bytes": 265898
+      }
+    ]
+  },
+  {
+    "id": "grok",
+    "name": "Grok",
+    "images": [
+      {
+        "id": "grok-01",
+        "label": "图片 01",
+        "url": "/ai-companions/grok-01.jpg",
+        "width": 941,
+        "height": 1672,
+        "bytes": 325415
+      },
+      {
+        "id": "grok-02",
+        "label": "图片 02",
+        "url": "/ai-companions/grok-02.jpg",
+        "width": 3072,
+        "height": 5504,
+        "bytes": 1786107
+      },
+      {
+        "id": "grok-03",
+        "label": "图片 03",
+        "url": "/ai-companions/grok-03.jpg",
+        "width": 1080,
+        "height": 720,
+        "bytes": 223129
+      },
+      {
+        "id": "grok-04",
+        "label": "图片 04",
+        "url": "/ai-companions/grok-04.jpg",
+        "width": 3840,
+        "height": 2160,
+        "bytes": 1236645
+      }
+    ]
+  },
+  {
+    "id": "glm",
+    "name": "GLM",
+    "images": [
+      {
+        "id": "glm-01",
+        "label": "图片 01",
+        "url": "/ai-companions/glm-01.jpg",
+        "width": 941,
+        "height": 1672,
+        "bytes": 266352
+      },
+      {
+        "id": "glm-02",
+        "label": "图片 02",
+        "url": "/ai-companions/glm-02.jpg",
+        "width": 3072,
+        "height": 5504,
+        "bytes": 1658531
+      },
+      {
+        "id": "glm-03",
+        "label": "图片 03",
+        "url": "/ai-companions/glm-03.jpg",
+        "width": 1152,
+        "height": 2048,
+        "bytes": 378869
+      },
+      {
+        "id": "glm-04",
+        "label": "图片 04",
+        "url": "/ai-companions/glm-04.jpg",
+        "width": 3840,
+        "height": 2160,
+        "bytes": 1065413
+      },
+      {
+        "id": "glm-05",
+        "label": "图片 05",
+        "url": "/ai-companions/glm-05.jpg",
+        "width": 2560,
+        "height": 1440,
+        "bytes": 559837
+      },
+      {
+        "id": "glm-06",
+        "label": "图片 06",
+        "url": "/ai-companions/glm-06.jpg",
+        "width": 1080,
+        "height": 720,
+        "bytes": 166652
+      }
+    ]
+  },
+  {
+    "id": "qwen",
+    "name": "Qwen",
+    "images": [
+      {
+        "id": "qwen-01",
+        "label": "图片 01",
+        "url": "/ai-companions/qwen-01.jpg",
+        "width": 941,
+        "height": 1672,
+        "bytes": 304885
+      },
+      {
+        "id": "qwen-02",
+        "label": "图片 02",
+        "url": "/ai-companions/qwen-02.jpg",
+        "width": 3072,
+        "height": 5504,
+        "bytes": 1910561
+      },
+      {
+        "id": "qwen-03",
+        "label": "图片 03",
+        "url": "/ai-companions/qwen-03.jpg",
+        "width": 3840,
+        "height": 2160,
+        "bytes": 1086979
+      },
+      {
+        "id": "qwen-04",
+        "label": "图片 04",
+        "url": "/ai-companions/qwen-04.jpg",
+        "width": 3344,
+        "height": 1882,
+        "bytes": 1016976
+      }
+    ]
+  },
+  {
+    "id": "kimi",
+    "name": "Kimi",
+    "images": [
+      {
+        "id": "kimi-01",
+        "label": "图片 01",
+        "url": "/ai-companions/kimi-01.jpg",
+        "width": 941,
+        "height": 1672,
+        "bytes": 310055
+      },
+      {
+        "id": "kimi-02",
+        "label": "图片 02",
+        "url": "/ai-companions/kimi-02.jpg",
+        "width": 3072,
+        "height": 5504,
+        "bytes": 2026459
+      },
+      {
+        "id": "kimi-03",
+        "label": "图片 03",
+        "url": "/ai-companions/kimi-03.jpg",
+        "width": 1152,
+        "height": 2048,
+        "bytes": 431849
+      },
+      {
+        "id": "kimi-04",
+        "label": "图片 04",
+        "url": "/ai-companions/kimi-04.jpg",
+        "width": 3840,
+        "height": 2160,
+        "bytes": 1105759
+      },
+      {
+        "id": "kimi-05",
+        "label": "图片 05",
+        "url": "/ai-companions/kimi-05.jpg",
+        "width": 2560,
+        "height": 1440,
+        "bytes": 530881
+      },
+      {
+        "id": "kimi-06",
+        "label": "图片 06",
+        "url": "/ai-companions/kimi-06.jpg",
+        "width": 1080,
+        "height": 608,
+        "bytes": 235579
+      }
+    ]
+  },
+  {
+    "id": "seed",
+    "name": "Seed",
+    "images": [
+      {
+        "id": "seed-01",
+        "label": "图片 01",
+        "url": "/ai-companions/seed-01.jpg",
+        "width": 1536,
+        "height": 2752,
+        "bytes": 530341
+      },
+      {
+        "id": "seed-02",
+        "label": "图片 02",
+        "url": "/ai-companions/seed-02.jpg",
+        "width": 3072,
+        "height": 5504,
+        "bytes": 1377998
+      },
+      {
+        "id": "seed-03",
+        "label": "图片 03",
+        "url": "/ai-companions/seed-03.jpg",
+        "width": 3840,
+        "height": 2160,
+        "bytes": 885392
+      }
+    ]
+  },
+  {
+    "id": "wenxin",
+    "name": "文心一言",
+    "images": [
+      {
+        "id": "wenxin-01",
+        "label": "图片 01",
+        "url": "/ai-companions/wenxin-01.jpg",
+        "width": 941,
+        "height": 1672,
+        "bytes": 378056
+      },
+      {
+        "id": "wenxin-02",
+        "label": "图片 02",
+        "url": "/ai-companions/wenxin-02.jpg",
+        "width": 3072,
+        "height": 5504,
+        "bytes": 2240507
+      },
+      {
+        "id": "wenxin-03",
+        "label": "图片 03",
+        "url": "/ai-companions/wenxin-03.jpg",
+        "width": 3840,
+        "height": 2160,
+        "bytes": 1675040
+      }
+    ]
+  },
+  {
+    "id": "minimax",
+    "name": "Minimax",
+    "images": [
+      {
+        "id": "minimax-01",
+        "label": "图片 01",
+        "url": "/ai-companions/minimax-01.jpg",
+        "width": 941,
+        "height": 1672,
+        "bytes": 263963
+      },
+      {
+        "id": "minimax-02",
+        "label": "图片 02",
+        "url": "/ai-companions/minimax-02.jpg",
+        "width": 3072,
+        "height": 5504,
+        "bytes": 1536675
+      },
+      {
+        "id": "minimax-03",
+        "label": "图片 03",
+        "url": "/ai-companions/minimax-03.jpg",
+        "width": 1080,
+        "height": 720,
+        "bytes": 266480
+      }
+    ]
+  },
+  {
+    "id": "perplexity",
+    "name": "Perplexity",
+    "images": [
+      {
+        "id": "perplexity-01",
+        "label": "图片 01",
+        "url": "/ai-companions/perplexity-01.jpg",
+        "width": 941,
+        "height": 1672,
+        "bytes": 262405
+      },
+      {
+        "id": "perplexity-02",
+        "label": "图片 02",
+        "url": "/ai-companions/perplexity-02.jpg",
+        "width": 3072,
+        "height": 5504,
+        "bytes": 1422086
+      },
+      {
+        "id": "perplexity-03",
+        "label": "图片 03",
+        "url": "/ai-companions/perplexity-03.jpg",
+        "width": 1122,
+        "height": 1402,
+        "bytes": 347778
+      }
+    ]
+  },
+  {
+    "id": "llama",
+    "name": "Llama（Meta）",
+    "images": [
+      {
+        "id": "llama-01",
+        "label": "图片 01",
+        "url": "/ai-companions/llama-01.jpg",
+        "width": 941,
+        "height": 1672,
+        "bytes": 187997
+      },
+      {
+        "id": "llama-02",
+        "label": "图片 02",
+        "url": "/ai-companions/llama-02.jpg",
+        "width": 3072,
+        "height": 5504,
+        "bytes": 1201645
+      }
+    ]
+  },
+  {
+    "id": "opencode",
+    "name": "OpenCode",
+    "images": [
+      {
+        "id": "opencode-01",
+        "label": "图片 01",
+        "url": "/ai-companions/opencode-01.jpg",
+        "width": 2160,
+        "height": 3840,
+        "bytes": 810752
+      }
+    ]
+  },
+  {
+    "id": "mistral",
+    "name": "Mistral AI",
+    "images": [
+      {
+        "id": "mistral-01",
+        "label": "图片 01",
+        "url": "/ai-companions/mistral-01.jpg",
+        "width": 3072,
+        "height": 5504,
+        "bytes": 1923255
+      },
+      {
+        "id": "mistral-02",
+        "label": "图片 02",
+        "url": "/ai-companions/mistral-02.jpg",
+        "width": 3072,
+        "height": 5504,
+        "bytes": 2101063
+      }
+    ]
+  }
+]

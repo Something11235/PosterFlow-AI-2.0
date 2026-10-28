@@ -17,6 +17,7 @@ import {
   IMAGE_MODEL_OPTIONS,
   DEFAULT_PLATFORM_MODEL,
   apimartImageModel,
+  imagePricingLabel,
 } from "../lib/provider";
 import { CLIENT_HEADERS } from "../lib/client";
 
@@ -202,10 +203,10 @@ export default function ProviderSettings({
 
           {billingMode === "platform" ? (
             <div className="space-y-4 rounded-lg border border-accent/30 bg-accent/8 p-4">
-              <div><p className="text-sm font-semibold text-text-primary">平台积分生图</p><p className="mt-1 text-sm leading-6 text-text-muted">{apimartImageModel(platformModel) ? "每张 1 积分，按实际保存张数结算。结果待确认时保留任务与预留积分，请查询原任务。" : "选择模型后按对应积分计费，失败或超时自动退回。"}</p></div>
+              <div><p className="text-sm font-semibold text-text-primary">平台积分生图</p><p className="mt-1 text-sm leading-6 text-text-muted">{platformModel === "grok-imagine-image-2.0" ? "纯文生图每张 1 积分，参考图编辑每张 2 积分，最多 3 张参考图。按实际保存张数结算，失败退回。" : apimartImageModel(platformModel) ? `${imagePricingLabel(platformModel)}，按实际保存张数结算。结果待确认时保留任务与预留积分，请查询原任务。` : "选择模型后按对应积分计费，失败或超时自动退回。"}</p></div>
               <label htmlFor="platform-image-model" className="text-sm font-medium text-text-secondary">模型</label>
               <select id="platform-image-model" value={platformModel} onChange={(event) => onPlatformModelChange?.(event.target.value)} className="min-h-11 w-full rounded-lg border border-border-default bg-bg-primary px-3 text-sm text-text-primary focus:border-accent/65">
-                {IMAGE_MODEL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}（1张图{option.creditCost}积分）</option>)}
+                {IMAGE_MODEL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.value}（{imagePricingLabel(option.value)}）</option>)}
               </select>
               <div className="grid grid-cols-2 gap-3"><div className="rounded-lg border border-border-subtle bg-bg-primary/50 p-3"><p className="text-xs text-text-muted">当前积分</p><p className="mt-1 text-xl font-semibold text-accent">{platformCredits}</p></div><div className="rounded-lg border border-border-subtle bg-bg-primary/50 p-3"><p className="text-xs text-text-muted">平台图片服务</p><p className="mt-1 truncate text-sm font-medium text-text-primary">{platformModel}</p></div></div>
               {!session && <p className="rounded-md border border-gold/30 bg-gold/10 px-3 py-2 text-sm text-gold">请先登录。完成邮箱验证后会自动获得注册赠送积分。</p>}
@@ -269,7 +270,7 @@ export default function ProviderSettings({
                   className="mt-2 min-h-12 w-full rounded-lg border border-border-default bg-bg-primary px-3 text-base text-text-primary focus:border-accent/65"
                 >
                   <option value="" disabled>请选择模型</option>
-                  {IMAGE_MODEL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                  {IMAGE_MODEL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.value}</option>)}
                   <option value={CUSTOM_SELECT_VALUE}>自定义模型</option>
                 </select>
                 {modelChoice === CUSTOM_SELECT_VALUE && (

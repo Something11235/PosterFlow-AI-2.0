@@ -4,6 +4,13 @@ import { imageGenerationFetch, readImageTask } from "../src/lib/apimartImages.js
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 const requestId = "11111111-1111-4111-8111-111111111111";
+
+test('recognized gateway timeout preserves its Chinese reason and never repeats a paid submission', async t => {
+  const calls=[];
+  install(t,async(url,init)=>{calls.push(init?.method || 'GET');return json(calls.length===1?{job:{status:'submitted'}}:{job:{status:'failed',error_code:'IMAGE_PROVIDER_TIMEOUT',failure_reason:'图片生成服务响应超时',recovery:['至少等待 2 分钟，再查询原任务。']}});});
+  const response=await imageGenerationFetch('/api/generate',{method:'POST',headers:{'X-Billing-Mode':'platform'},body:JSON.stringify({platform_model:'grok-imagine-2.0-ext',request_id:requestId,prompt:'fixture'})},{pollInterval:0});
+  const data=await response.json();assert.equal(data.code,'IMAGE_PROVIDER_TIMEOUT');assert.equal(data.error,'图片生成服务响应超时');assert.match(data.recovery[0],/2 分钟/);assert.deepEqual(calls,['POST','GET']);
+});
 function install(t, fetch) {
   const oldFetch = global.fetch, oldWindow = global.window;
   global.fetch = fetch;
@@ -25,7 +32,7 @@ test("new models submit once then query until actual saved images are returned",
     if (calls.length === 2) return json({ job: { status: "processing" } });
     return json({ job: { status: "completed" }, images: [{ filename: "stored.png" }], credit_balance: 9 });
   });
-  const response = await imageGenerationFetch("/api/generate", { method: "POST", headers: { "X-Billing-Mode": "platform" }, body: JSON.stringify({ platform_model: "nano-banana-pro", request_id: requestId, prompt: "猫" }) }, { pollInterval: 0 });
+  const response = await imageGenerationFetch("/api/generate", { method: "POST", headers: { "X-Billing-Mode": "platform" }, body: JSON.stringify({ platform_model: "gemini-nano-banana-2.1", request_id: requestId, prompt: "猫" }) }, { pollInterval: 0 });
   assert.equal((await response.json()).images[0].filename, "stored.png");
   assert.equal(calls.filter(call => call.method === "POST").length, 1);
   assert.equal(calls[0].url, "/api/apimart-images/generations");
@@ -42,7 +49,7 @@ test("uncertain submit and query failure never trigger another paid POST", async
 test("long running tasks remain resumable rather than being regenerated", async t => {
   let count = 0;
   install(t, async () => { count++; return json({ job: { status: "processing" } }, 202); });
-  const response = await imageGenerationFetch("/api/generate", { method: "POST", headers: { "X-Billing-Mode": "platform" }, body: JSON.stringify({ platform_model: "nano-banana-pro", request_id: requestId, prompt: "猫" }) }, { maxWait: 0 });
+  const response = await imageGenerationFetch("/api/generate", { method: "POST", headers: { "X-Billing-Mode": "platform" }, body: JSON.stringify({ platform_model: "gemini-nano-banana-2.1", request_id: requestId, prompt: "猫" }) }, { maxWait: 0 });
   assert.equal((await response.json()).code, "IMAGE_TASK_PENDING");
   assert.equal(count, 1);
 });

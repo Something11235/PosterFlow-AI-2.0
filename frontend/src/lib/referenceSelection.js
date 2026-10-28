@@ -10,7 +10,7 @@ export function referenceFileKey(file) {
   return JSON.stringify([file.name, file.size, file.lastModified ?? 0, file.type]);
 }
 
-export function appendReferenceFiles(current, incoming) {
+export function appendReferenceFiles(current, incoming, limit = MAX_REFERENCE_IMAGES) {
   const files = [...current], keys = new Set(current.map(referenceFileKey));
   const result = { files, added: 0, duplicates: 0, oversized: 0, unsupported: 0, overflow: 0 };
   for (const file of incoming) {
@@ -18,7 +18,7 @@ export function appendReferenceFiles(current, incoming) {
     if (file.size > MAX_REFERENCE_FILE_BYTES) { result.oversized++; continue; }
     const key = referenceFileKey(file);
     if (keys.has(key)) { result.duplicates++; continue; }
-    if (files.length >= MAX_REFERENCE_IMAGES) { result.overflow++; continue; }
+    if (files.length >= limit) { result.overflow++; continue; }
     files.push(file); keys.add(key); result.added++;
   }
   return result;

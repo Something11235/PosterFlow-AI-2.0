@@ -1,5 +1,6 @@
 import React from "react";
 import { LayoutTemplate, Scaling, SlidersHorizontal } from "lucide-react";
+import { imageCreditCost, imagePricingLabel } from "../lib/provider";
 
 const FALLBACK_SIZES = {
   square_1_1: { label: "正方形 1:1", width: 1024, height: 1024 },
@@ -28,6 +29,7 @@ export default function ParameterPanel({
   onCountChange,
   sizes,
   mode,
+  billingMode = "platform",
   apimartSpec,
   resolution,
   onResolutionChange,
@@ -174,8 +176,8 @@ export default function ParameterPanel({
       </fieldset>
 
       {apimartSpec && <div className="mb-4 space-y-3 rounded-lg border border-accent/25 bg-accent/5 p-3">
-        <label className="block text-xs text-text-secondary">清晰度<select aria-label="图片清晰度" value={resolution} onChange={event => onResolutionChange(event.target.value)} className="mt-2 min-h-11 w-full rounded-md border border-border-default bg-bg-primary px-3 text-sm text-text-primary">{apimartSpec.resolutions.map(value => <option key={value} value={value}>{value === "quality" ? "质量模式" : value}</option>)}</select></label>
-        <p className="text-xs leading-5 text-text-muted">每张 1 积分 · 单次最多 {apimartSpec.maxCount} 张 · {apimartSpec.maxReferences ? `最多 ${apimartSpec.maxReferences} 张参考图` : "仅支持文生图"}。画面采用比例控制，实际像素以生成结果为准。</p>
+        {!apimartSpec.automaticResolution && <label className="block text-xs text-text-secondary">清晰度<select aria-label="图片清晰度" value={resolution} onChange={event => onResolutionChange(event.target.value)} className="mt-2 min-h-11 w-full rounded-md border border-border-default bg-bg-primary px-3 text-sm text-text-primary">{apimartSpec.resolutions.map(value => <option key={value} value={value}>{value === "quality" ? "质量模式" : value}</option>)}</select></label>}
+        <p className="text-xs leading-5 text-text-muted" aria-live="polite">{billingMode === "own_key" ? "自带 API Key 模式不扣网站积分" : apimartSpec.resolutionCreditCosts ? `当前 ${resolution} 每张 ${imageCreditCost(apimartSpec.value, 0, resolution)} 积分（${count} 张共 ${count * imageCreditCost(apimartSpec.value, 0, resolution)} 积分）。${imagePricingLabel(apimartSpec.value)}` : apimartSpec.referenceCreditCost ? `纯文生图每张 ${apimartSpec.creditCost} 积分，参考图编辑每张 ${apimartSpec.referenceCreditCost} 积分` : `每张 ${apimartSpec.creditCost} 积分`} · 单次最多 {apimartSpec.maxCount} 张 · {apimartSpec.maxReferences ? `最多 ${apimartSpec.maxReferences} 张参考图` : "仅支持文生图"}。画面采用比例控制，实际像素以生成结果为准。</p>
       </div>}
 
       <div className="rounded-lg border border-border-subtle bg-bg-primary/55 p-3">

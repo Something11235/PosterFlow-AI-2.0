@@ -2,10 +2,9 @@ export const PROVIDER_STORAGE_KEY = "posterflow.provider.session.v1";
 export const MAX_REFERENCE_IMAGES = 8;
 
 export const APIMART_IMAGE_MODELS = [
-  { value: "gemini-nano-banana-2.1", label: "Nano Banana 2.1", creditCost: 1, maxCount: 4, maxReferences: 8, resolutions: ["1K", "2K", "4K"] },
-  { value: "nano-banana-pro", label: "Nano Banana Pro", creditCost: 1, maxCount: 1, maxReferences: 8, resolutions: ["1K", "2K", "4K"] },
-  { value: "grok-imagine-image-2.0", label: "grok-imagine-image-2.0", creditCost: 1, maxCount: 4, maxReferences: 3, resolutions: ["1K", "2K"] },
-  { value: "grok-imagine-2.0-ext", label: "grok-imagine-2.0-ext", creditCost: 1, maxCount: 4, maxReferences: 0, resolutions: ["quality"] },
+  { value: "gemini-nano-banana-2.1", label: "Nano Banana 2.1", creditCost: 1, resolutionCreditCosts: { "4K": 2 }, maxCount: 4, maxReferences: 8, resolutions: ["1K", "2K", "4K"] },
+  { value: "grok-imagine-image-2.0", label: "Grok Imagine Image 2.0", creditCost: 1, referenceCreditCost: 2, maxCount: 4, maxReferences: 3, automaticResolution: true, resolutions: ["1K", "2K"] },
+  { value: "grok-imagine-2.0-ext", label: "Grok Imagine 2.0 Ext", creditCost: 1, maxCount: 4, maxReferences: 0, automaticResolution: true, resolutions: ["quality"] },
 ];
 export const apimartImageModel = model => APIMART_IMAGE_MODELS.find(item => item.value === model);
 
@@ -15,6 +14,19 @@ export const IMAGE_MODEL_OPTIONS = [
   { value: "gpt-image-2", label: "gpt-image-2", creditCost: 1 },
   ...APIMART_IMAGE_MODELS,
 ];
+
+export function imageCreditCost(model, referenceCount = 0, resolution = "") {
+  const spec = IMAGE_MODEL_OPTIONS.find(option => option.value === model);
+  const resolutionCost = spec?.resolutionCreditCosts?.[String(resolution).trim().toUpperCase()];
+  if (resolutionCost != null) return resolutionCost;
+  return referenceCount > 0 ? spec?.referenceCreditCost ?? spec?.creditCost ?? 1 : spec?.creditCost ?? 1;
+}
+
+export function imagePricingLabel(model) {
+  const spec = IMAGE_MODEL_OPTIONS.find(option => option.value === model);
+  if (spec?.resolutionCreditCosts) return `1K、2K ${imageCreditCost(model)} 积分 / 张，4K ${imageCreditCost(model, 0, "4K")} 积分 / 张`;
+  return `${imageCreditCost(model)} 积分 / 张${spec?.referenceCreditCost ? `，使用参考图 ${imageCreditCost(model, 1)} 积分 / 张` : ""}`;
+}
 
 export const DEFAULT_PLATFORM_MODEL = IMAGE_MODEL_OPTIONS[0].value;
 

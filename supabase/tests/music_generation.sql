@@ -27,14 +27,14 @@ declare
   b integer;
 begin
   v:=public.begin_music_job(owner,u,r,'platform','suno','v6',repeat('a',64));
-  if v->>'existing'<>'false' or (v->>'balance')::int<>98 then raise exception 'reservation failed'; end if;
+  if v->>'existing'<>'false' or (v->>'balance')::numeric<>98 then raise exception 'reservation failed'; end if;
   v:=public.begin_music_job(owner,u,r,'platform','suno','v6',repeat('a',64));
   if v->>'existing'<>'true' then raise exception 'duplicate generated again'; end if;
   v:=public.begin_music_job(owner,u,r,'platform','suno','v6',repeat('b',64));
   if v->>'code'<>'MUSIC_REQUEST_CONFLICT' then raise exception 'parameter fingerprint not enforced'; end if;
   v:=public.apply_music_job(owner,r,'submitted','task_music_sql_1');
   v:=public.apply_music_job(owner,r,'completed',null,2);
-  if v->'job'->>'charged_credits'<>'4' or (v->>'balance')::int<>96 then raise exception 'two songs must cost four'; end if;
+  if v->'job'->>'charged_credits'<>'4' or (v->>'balance')::numeric<>96 then raise exception 'two songs must cost four'; end if;
   v:=public.apply_music_job(owner,r,'completed',null,2);
   v:=public.apply_music_job(owner,r,'failed',null,0,'late-failure');
   select balance into b from public.credit_accounts where user_id=u;
@@ -77,7 +77,7 @@ declare
 begin
   v:=public.begin_music_job(owner,u,r,'platform','suno','v6-mini',repeat('d',64));
   v:=public.apply_music_job(owner,r,'completed',null,2);
-  if v->'job'->>'billing_status'<>'awaiting_balance' or (v->>'balance')::int<>0 then raise exception 'low balance was overdrawn'; end if;
+  if v->'job'->>'billing_status'<>'awaiting_balance' or (v->>'balance')::numeric<>0 then raise exception 'low balance was overdrawn'; end if;
   v:=public.apply_music_job(owner,r,'unknown');
   if v->'job'->>'status'<>'completed' then raise exception 'completed count was lost'; end if;
 end;
@@ -89,7 +89,7 @@ do $$
 declare v jsonb;
 begin
   v:=public.apply_music_job('user-11111111-1111-4111-8111-111111111111','dddddddd-dddd-4ddd-8ddd-dddddddddddd','completed',null,9);
-  if v->'job'->>'charged_credits'<>'4' or v->'job'->>'generated_count'<>'2' or (v->>'balance')::int<>0 then raise exception 'top-up failed or original count changed'; end if;
+  if v->'job'->>'charged_credits'<>'4' or v->'job'->>'generated_count'<>'2' or (v->>'balance')::numeric<>0 then raise exception 'top-up failed or original count changed'; end if;
 end;
 $$;
 rollback;

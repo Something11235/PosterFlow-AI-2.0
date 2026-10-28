@@ -15,11 +15,16 @@ except ModuleNotFoundError:
     import apimart_image_provider as provider
     from supabase_service import SupabaseGateway, SupabaseError, is_supabase_configured
 
-PUBLIC_FIELDS = ("request_id", "model", "billing_mode", "status", "requested_count", "image_keys", "error_code", "created_at")
+PUBLIC_FIELDS = ("request_id", "model", "billing_mode", "status", "requested_count", "image_keys", "error_code", "created_at", "reference_count", "unit_credit_cost", "pricing_resolution")
 
 
 def public_job(job):
-    return {name: job.get(name) for name in PUBLIC_FIELDS}
+    result = {name: job.get(name) for name in PUBLIC_FIELDS}
+    if job.get('status') == 'failed':
+        result['failure_reason'] = provider.image_failure_reason(job.get('error_code'))
+        if job.get('error_code') == 'IMAGE_PROVIDER_TIMEOUT':
+            result['recovery'] = provider.IMAGE_TIMEOUT_RECOVERY
+    return result
 
 
 class ImageStore:
@@ -30,13 +35,13 @@ class ImageStore:
         result = self.gateway.rpc(name, values)
         if not isinstance(result, dict) or not result.get("ok"):
             code = result.get("code", "IMAGE_DATABASE_UNAVAILABLE") if isinstance(result, dict) else "IMAGE_DATABASE_UNAVAILABLE"
-            messages = {"IMAGE_TASK_NOT_FOUND": "未找到本人的图片任务。", "IMAGE_REQUEST_CONFLICT": "请求编号对应的参数不同，请查询原任务。", "EMAIL_UNVERIFIED": "请先完成邮箱验证。", "CREDITS_INSUFFICIENT": "积分不足，每张图片需要 1 积分。", "ACCOUNT_FROZEN": "当前账户不可用。"}
+            messages = {"IMAGE_TASK_NOT_FOUND": "未找到本人的图片任务。", "IMAGE_REQUEST_CONFLICT": "请求编号对应的参数不同，请查询原任务。", "EMAIL_UNVERIFIED": "请先完成邮箱验证。", "CREDITS_INSUFFICIENT": "积分不足，请减少生成数量或充值后重试。", "ACCOUNT_FROZEN": "当前账户不可用。"}
             raise provider.ImageTaskError(code, messages.get(code, "图片任务暂时无法处理，请保留请求编号。"), 404 if code == "IMAGE_TASK_NOT_FOUND" else 409)
         return result
 
     def begin(self, owner, user, request_id, mode, model, body, prompt):
         fingerprint = hashlib.sha256(json.dumps(body, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
-        return self.rpc("begin_apimart_image_job", {"p_owner": owner, "p_user": user, "p_request": request_id, "p_mode": mode, "p_model": model, "p_count": body["n"], "p_fingerprint": fingerprint, "p_prompt": prompt})
+        return self.rpc("begin_apimart_image_job_v3", {"p_owner": owner, "p_user": user, "p_request": request_id, "p_mode": mode, "p_model": model, "p_count": body["n"], "p_fingerprint": fingerprint, "p_prompt": prompt, "p_reference_count": len(body.get("image_urls") or []), "p_resolution": body.get("resolution")})
 
     def apply(self, owner, request_id, event, **kwargs):
         return self.rpc("apply_apimart_image_job", {"p_owner": owner, "p_request": request_id, "p_event": event, **kwargs})
@@ -59,6 +64,8 @@ def create_image_blueprint(server):
 
     @bp.errorhandler(provider.ImageTaskError)
     def image_error(error):
+        if error.code in ("REFERENCE_UPLOAD_FAILED", "REFERENCE_IMAGE_INVALID"):
+            return jsonify(error=error.message, code=error.code, detail="参考图未完成上传，尚未提交生图任务。请稍后重试上传；若持续失败，请联系站主。", submission_unknown=False, generation_submitted=False, phase="reference_upload", recovery=["稍后重试上传", "持续失败请联系站主"]), error.status
         return jsonify(error=error.message, code=error.code, detail=error.message, submission_unknown=error.uncertain, recovery=["查询原任务", "请勿重复生成"]), error.status
 
     @bp.errorhandler(SupabaseError)
@@ -80,14 +87,14 @@ def create_image_blueprint(server):
             user = server.require_authenticated_user()
             key = os.getenv("APIMART_IMAGE_API_KEY", "").strip()
             if not key:
-                raise provider.ImageTaskError("APIMART_IMAGE_NOT_CONFIGURED", "APIMart 图片服务尚未配置，可使用原有模型。", 503)
+                raise provider.ImageTaskError("APIMART_IMAGE_NOT_CONFIGURED", "平台图片服务尚未配置，可使用原有模型。", 503)
             return mode, key, "user-" + user.id, user.id
         key = request.headers.get("X-Provider-Api-Key", "").strip()
         endpoint = request.headers.get("X-Provider-Endpoint", "").strip().rstrip("/")
         if endpoint != provider.BASE + "/images/generations" or request.headers.get("X-Provider-Auth-Type", "bearer") != "bearer":
-            raise provider.ImageTaskError("APIMART_ENDPOINT_INVALID", "新增模型使用 APIMart 的完整图片生成地址和 Bearer 鉴权。")
+            raise provider.ImageTaskError("APIMART_ENDPOINT_INVALID", "新增模型需要填写完整的图片生成地址，并使用 Bearer 鉴权。")
         if not key or len(key) > 4096 or any(ord(char) < 33 or ord(char) > 126 for char in key):
-            raise provider.ImageTaskError("PROVIDER_KEY_MISSING", "请填写有效的 APIMart API Key。")
+            raise provider.ImageTaskError("PROVIDER_KEY_MISSING", "请填写有效的图片服务 API Key。")
         user = server.set_optional_storage_scope()
         identity = "user-" + user.id if user else "guest-" + server.current_client_id()
         owner = identity + "-" + hashlib.sha256(key.encode()).hexdigest()
@@ -108,7 +115,7 @@ def create_image_blueprint(server):
             return result(job)
         remote = provider.query(key, job["provider_task_id"])
         if remote["status"] in ("failed", "cancelled"):
-            applied = store.apply(owner, request_id, "failed", p_error="APIMART_TASK_FAILED")
+            applied = store.apply(owner, request_id, "failed", p_error=remote.get('error_code') or "APIMART_TASK_FAILED")
             return result(applied["job"], applied.get("balance"))
         if remote["status"] != "completed":
             applied = store.apply(owner, request_id, "unknown" if remote["status"] == "unknown" else "processing")

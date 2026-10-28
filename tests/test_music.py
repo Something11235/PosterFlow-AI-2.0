@@ -12,6 +12,22 @@ TASK_ID = "task_test_0123456789"
 
 
 class MusicProtocolTests(unittest.TestCase):
+    def test_music_history_snapshot_keeps_only_text_and_base_parameters(self):
+        snapshot = routes.music_prompt_snapshot({"model": "flowmusic", "sound_prompt": "爵士", "lyrics": "歌词", "api_key": "private-secret", "endpoint": "https://private.invalid", "audio_url": "https://private.invalid/track"})
+        self.assertEqual(snapshot["parameters"], {"model": "flowmusic", "sound_prompt": "爵士", "lyrics": "歌词"})
+        self.assertIn("爵士", snapshot["prompt"]); self.assertIn("歌词", snapshot["prompt"])
+        self.assertNotIn("private", str(snapshot))
+
+    def test_music_store_creates_history_atomically_with_reservation(self):
+        store = object.__new__(routes.MusicStore)
+        with patch.object(store, "rpc", return_value={"ok": True}) as rpc:
+            store.begin("user-test", USER_ID, REQUEST_ID, "platform", {"model": "suno", "prompt": "钢琴"}, "v6")
+        self.assertEqual(rpc.call_args.args[0], "begin_music_job_with_history")
+        body = rpc.call_args.args[1]
+        self.assertEqual(body["p_parameters"], {"model": "suno", "prompt": "钢琴"})
+        self.assertEqual(body["p_user_id"], USER_ID)
+        self.assertNotIn("credits_per_song", body)
+
     def test_all_selected_versions_use_verified_fields(self):
         for version in provider.SUNO_VERSIONS:
             with self.subTest(version=version):
@@ -49,6 +65,24 @@ class MusicProtocolTests(unittest.TestCase):
         for values in ({"sound_prompt": ""}, {"lyrics": "歌", "length": 241}, {"lyrics": "歌", "length": True}, {"lyrics": "歌", "bpm": "0"}, {"lyrics": "歌", "bpm": 120}):
             with self.subTest(values=values), self.assertRaises(provider.MusicError):
                 provider.build_music_request({"model": "flowmusic", **values})
+
+    def test_flow_outbound_json_matches_documented_field_types_for_both_versions(self):
+        # Contract from the two official generation pages: bpm and seed are
+        # strings, length is an integer; default/auto fields must be omitted.
+        import json
+        for version in provider.FLOW_VERSIONS:
+            values = {"model": "flowmusic", "version": version, "sound_prompt": "piano", "lyrics": "original lyrics", "title": "My Song", "bpm": "120", "length": 60, "seed": "42"}
+            body = provider.build_music_request(values)
+            response = self.response(200, {"code": 200, "data": [{"task_id": TASK_ID}]})
+            with patch.object(provider.requests, "request", return_value=response) as outgoing:
+                self.assertEqual(provider.submit_music("test-key", body), TASK_ID)
+            actual = json.loads(json.dumps(outgoing.call_args.kwargs["json"]))
+            for field in ("model", "sound_prompt", "lyrics", "title", "bpm", "seed"):
+                self.assertIs(type(actual[field]), str)
+            self.assertIs(type(actual["length"]), int)
+            self.assertEqual(actual["bpm"], "120")
+            self.assertEqual(actual["length"], 60)
+            self.assertEqual(actual.get("version"), "lyria-3.5" if version == "lyria-3.5" else None)
 
     def test_custom_vocals_need_lyrics_but_instrumental_may_omit_them(self):
         with self.assertRaises(provider.MusicError):
@@ -100,6 +134,30 @@ class MusicProtocolTests(unittest.TestCase):
                 with self.assertRaises(provider.MusicError) as caught: provider.submit_music("test-key", {})
                 self.assertEqual(caught.exception.uncertain, uncertain)
                 self.assertNotIn("secret data", str(caught.exception))
+
+    def test_query_rejection_is_not_reported_as_generation_rejection(self):
+        secret = "private-provider-text"
+        for status in (401, 403, 404, 429, 500):
+            response = self.response(status, {"error": {"message": secret, "code": "task_not_found"}})
+            with self.subTest(status=status), patch.object(provider.requests, "request", return_value=response) as call, self.assertLogs(provider.logger, level="WARNING") as logs:
+                with self.assertRaises(provider.MusicError) as caught:
+                    provider.query_music("private-test-key", TASK_ID)
+            self.assertIn(caught.exception.code, {"MUSIC_QUERY_REJECTED", "MUSIC_QUERY_UNAVAILABLE"})
+            self.assertEqual(caught.exception.provider_status, status)
+            self.assertEqual(caught.exception.provider_code, "task_not_found")
+            self.assertIn("不表示生成失败", caught.exception.message)
+            self.assertFalse(caught.exception.uncertain)
+            self.assertNotIn(secret, " ".join(logs.output))
+            self.assertNotIn("private-test-key", " ".join(logs.output))
+            call.assert_called_once()
+            self.assertEqual(call.call_args.args[0], "GET")
+
+    def test_arbitrary_provider_error_codes_are_not_exposed(self):
+        with patch.object(provider.requests, "request", return_value=self.response(404, {"error": {"code": "secret-provider-key"}})), self.assertLogs(provider.logger, level="WARNING") as logs:
+            with self.assertRaises(provider.MusicError) as caught:
+                provider.query_music("test-key", TASK_ID)
+        self.assertEqual(caught.exception.provider_code, "other")
+        self.assertNotIn("secret-provider-key", " ".join(logs.output))
 
 
     def test_custom_model_and_version_are_allowed_only_for_own_key(self):
@@ -155,7 +213,21 @@ class MusicProtocolTests(unittest.TestCase):
         with patch.object(provider.requests, "request", return_value=self.response(200, payload)) as standard, patch.object(provider, "pinned_custom_response") as pinned:
             self.assertEqual(provider.query_music("test-secret", TASK_ID, endpoint)["status"], "processing")
         pinned.assert_not_called()
-        self.assertEqual(standard.call_args.args[1], endpoint.replace("{task_id}", TASK_ID))
+        self.assertEqual(standard.call_args.args[1], f"https://api.apimart.ai/v1/tasks/{TASK_ID}")
+
+    def test_platform_music_queries_use_verified_unified_task_endpoint(self):
+        payload = {"code": 200, "data": {"id": TASK_ID, "status": "completed", "progress": 100, "result": {"music": [{"audio_url": "https://cdn.apimart.ai/one.mp3"}, {"audio_url": "https://cdn.apimart.ai/two.mp3"}]}}}
+        with patch.object(provider.requests, "request", return_value=self.response(200, payload)) as standard:
+            result = provider.query_music("test-key", TASK_ID)
+        self.assertEqual(standard.call_args.args[:2], ("GET", f"https://api.apimart.ai/v1/tasks/{TASK_ID}?language=zh"))
+        self.assertEqual(len(result["tracks"]), 2)
+        standard.assert_called_once()
+
+    def test_only_exact_apimart_query_templates_are_canonicalized(self):
+        for prefix in ("/v1/music/tasks/", "/v1/tasks/"):
+            self.assertEqual(provider.trusted_apimart_url("GET", "https://api.apimart.ai" + prefix + TASK_ID), provider.TASKS_BASE + "/" + TASK_ID)
+        for endpoint in (f"https://api.apimart.ai.evil.invalid/v1/tasks/{TASK_ID}", f"https://api.apimart.ai/v1/tasks/{TASK_ID}?token=private", "https://api.apimart.ai/v1/tasks/../generations"):
+            self.assertIsNone(provider.trusted_apimart_url("GET", endpoint))
 
     def test_lookalike_hosts_and_unrecognized_paths_cannot_use_trusted_transport(self):
         for endpoint in ("https://api.apimart.ai.evil.invalid/v1/music/generations", "https://api.apimart.ai/private/path", "https://api.apimart.ai/v1/music/generations?token=value", "https://user:pass@api.apimart.ai/v1/music/generations", "https://api.apimart.ai/v1/music/tasks/../generations"):
@@ -259,6 +331,40 @@ class MusicRouteTests(unittest.TestCase):
             response = self.client.get(f"/api/music/tasks/{REQUEST_ID}", headers=self.headers)
         self.assertIn("warning", response.json); self.store.apply.assert_not_called()
 
+    def test_query_rejection_keeps_the_original_intent_and_reservation(self):
+        failure = provider.MusicError("MUSIC_QUERY_REJECTED", "查询被拒绝", 502, provider_status=404, provider_code="task_not_found")
+        with patch.object(routes, "query_music", side_effect=failure), patch.object(routes, "submit_music") as paid:
+            response = self.client.get(f"/api/music/tasks/{REQUEST_ID}", headers=self.headers)
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json["code"], "MUSIC_QUERY_REJECTED")
+        self.assertEqual(response.json["provider_status"], 404)
+        self.assertEqual(response.json["provider_code"], "task_not_found")
+        self.store.apply.assert_not_called(); paid.assert_not_called()
+
+    def test_old_refunded_task_can_show_newly_queried_chinese_reason(self):
+        self.store.get.return_value = {"request_id": REQUEST_ID, "provider_task_id": TASK_ID, "status": "failed", "billing_status": "refunded", "error_code": "MUSIC_TASK_FAILED"}
+        self.store.apply.return_value = {"ok": True, "job": self.store.get.return_value, "balance": 10}
+        with patch.object(routes, "query_music", return_value={"status": "failed", "tracks": [], "progress": 0, "error_code": "MUSIC_LYRICS_COPYRIGHT"}):
+            response = self.client.get("/api/music/tasks/" + REQUEST_ID, headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("歌词包含受版权保护", response.json["job"]["failure_reason"])
+        self.assertEqual(response.json["job"]["billing_status"], "refunded")
+
+    def test_flow_failed_task_refresh_translates_cause_without_resubmit_or_changing_refund(self):
+        self.store.get.return_value = {"request_id": REQUEST_ID, "provider_task_id": TASK_ID, "model": "flowmusic", "status": "failed", "billing_status": "refunded", "charged_credits": 0, "error_code": "MUSIC_TASK_FAILED"}
+        self.store.apply.return_value = {"ok": True, "job": self.store.get.return_value, "balance": 10}
+        raw = {"data": {"id": TASK_ID, "status": "failed", "error": {"message": "flowmusic submit failed: Request parameter type mismatch"}}}
+        with patch.object(provider, "apimart_request", return_value=raw) as http, patch.object(routes, "submit_music") as paid:
+            response = self.client.get("/api/music/tasks/" + REQUEST_ID, headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("请求参数类型不匹配", response.json["job"]["failure_reason"])
+        self.assertNotIn("版权", response.json["job"]["failure_reason"])
+        self.assertEqual(response.json["job"]["charged_credits"], 0)
+        self.assertEqual(response.json["job"]["billing_status"], "refunded")
+        self.assertEqual(self.store.apply.call_args.kwargs["error_code"], "MUSIC_PARAMETER_TYPE_MISMATCH")
+        paid.assert_not_called()
+        self.assertEqual(http.call_args.args[0], "GET")
+
     def test_cross_origin_submission_is_rejected(self):
         self.headers["Origin"] = "https://evil.invalid"
         self.assertEqual(self.post().status_code, 403)
@@ -292,3 +398,67 @@ class MusicRouteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MusicFailureReasonTests(unittest.TestCase):
+    def test_cover_generic_service_failure_is_neutral_but_specific_copyright_wins(self):
+        result = provider.normalize_task({"data": {"id": TASK_ID, "status": "failed", "error": "Job failed,Please try again later."}}, TASK_ID)
+        self.assertEqual(result["error_code"], "MUSIC_PROVIDER_JOB_FAILED")
+        reason = provider.failure_reason(result["error_code"])
+        self.assertIn("未提供具体失败原因", reason)
+        self.assertNotIn("版权", reason)
+        result = provider.normalize_task({"data": {"id": TASK_ID, "status": "failed", "error": "Job failed,Please try again later. Your lyrics contain copyrighted material."}}, TASK_ID)
+        self.assertEqual(result["error_code"], "MUSIC_LYRICS_COPYRIGHT")
+
+    def test_flow_parameter_type_failure_is_not_misclassified_as_copyright(self):
+        from backend.admin_multimedia import explanation
+        raw = 'flowmusic submit failed: Request parameter type mismatch (raw: {"status":"FAILED","message":"Request parameter type mismatch","data":null})'
+        for fields in ({"error": {"message": raw}}, {"message": raw}, {"error_message": raw}, {"failure_reason": raw}, {"result": {"error": {"message": raw}}}):
+            with self.subTest(fields=list(fields)):
+                result = provider.normalize_task({"data": {"id": TASK_ID, "status": "failed", **fields}}, TASK_ID)
+                self.assertEqual(result["error_code"], "MUSIC_PARAMETER_TYPE_MISMATCH")
+                visible = routes.public_job({"status": "failed", "error_code": result["error_code"], "billing_status": "refunded", "charged_credits": 0})
+                self.assertIn("请求参数类型不匹配", visible["failure_reason"])
+                self.assertNotIn("版权", visible["failure_reason"])
+                self.assertNotIn("flowmusic submit", str(visible))
+                self.assertEqual(explanation("music", result["error_code"])[0], "请求参数类型")
+
+    def test_type_rejection_is_not_a_new_submission_or_a_raw_log_disclosure(self):
+        raw = 'Request parameter type mismatch key=private-test-key https://private.invalid/?token=private'
+        response = MusicProtocolTests.response(self, 400, {"error": {"message": raw}})
+        with patch.object(provider.requests, "request", return_value=response) as request:
+            with self.assertRaises(provider.MusicError) as caught:
+                provider.submit_music("private-test-key", {"model": "flowmusic", "sound_prompt": "piano"})
+        request.assert_called_once()
+        self.assertFalse(caught.exception.uncertain)
+        self.assertEqual(caught.exception.reason_code, "MUSIC_PARAMETER_TYPE_MISMATCH")
+        self.assertNotIn("private", caught.exception.message)
+
+    def test_response_song_content_cannot_be_used_as_a_failure_explanation(self):
+        result = provider.normalize_task({"data": {"id": TASK_ID, "status": "failed", "title": "copyright artist name", "result": {"music": [{"lyrics": "Request parameter type mismatch", "title": "copyright"}]}}}, TASK_ID)
+        self.assertEqual(result["error_code"], "MUSIC_TASK_FAILED")
+
+    def test_log_reason_is_translated_to_safe_persistent_category(self):
+        result = provider.normalize_task({"data": {"id": TASK_ID, "status": "failed", "error": {"message": "Your lyrics contain copyrighted material. Please change it and try again."}}}, TASK_ID)
+        self.assertEqual(result["error_code"], "MUSIC_LYRICS_COPYRIGHT")
+        visible = routes.public_job({"status": "failed", "error_code": result["error_code"]})
+        self.assertIn("歌词包含受版权保护", visible["failure_reason"])
+        self.assertNotIn("copyrighted", str(visible))
+
+    def test_unknown_error_never_echoes_keys_urls_or_raw_prompt(self):
+        raw = "private prompt with https://private.invalid/token?key=hidden bearer-secret-material"
+        result = provider.normalize_task({"data": {"id": TASK_ID, "status": "failed", "error": {"message": raw}}}, TASK_ID)
+        self.assertEqual(result["error_code"], "MUSIC_TASK_FAILED")
+        self.assertNotIn(raw, str(result))
+        self.assertNotIn("private.invalid", routes.public_job({"status": "failed", "error_code": raw})["failure_reason"])
+
+    def test_rejected_submission_shows_reason_without_raw_error(self):
+        raw = "Your lyrics contain copyrighted material. key=private-test-key"
+        response = MusicProtocolTests.response(self, 400, {"error": {"message": raw}})
+        with patch.object(provider.requests, "request", return_value=response):
+            with self.assertRaises(provider.MusicError) as caught:
+                provider.submit_music("private-test-key", {})
+        self.assertFalse(caught.exception.uncertain)
+        self.assertEqual(caught.exception.reason_code, "MUSIC_LYRICS_COPYRIGHT")
+        self.assertIn("受版权保护", caught.exception.message)
+        self.assertNotIn("private-test-key", caught.exception.message)

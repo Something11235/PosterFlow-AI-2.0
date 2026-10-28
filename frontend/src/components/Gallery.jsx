@@ -14,6 +14,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { fetchImageUrl } from "../lib/client";
+import BackupImageDownload from "./BackupImageDownload";
 
 const PLATFORM_FAILURE_DETAIL = "一般为以下原因：\n1.提示词有模型不支持的参数或违规用词触发审核拒绝\n2.余额不足\n3.高峰期使用人数过多";
 
@@ -34,6 +35,8 @@ export default function Gallery({
   onDownloadBatch,
   onDownloadImage,
   downloadingImages,
+  downloadError,
+  onDismissDownloadError,
   isExporting = false,
   onAddToCanvas,
   onCopyPrompt,
@@ -49,6 +52,7 @@ export default function Gallery({
   const [assetUrls, setAssetUrls] = useState({});
 
   const hasImages = images.length > 0;
+  const visibleDownloadError = hasImages && downloadError?.filenames?.some(filename => images.some(image => image.filename === filename)) ? downloadError : null;
 
   useEffect(() => {
     let alive = true;
@@ -65,9 +69,9 @@ export default function Gallery({
   }, [authHeaders, authenticated, images]);
 
   return (
-    <div className="surface flex h-full min-h-0 flex-col rounded-lg">
+    <div className="surface flex min-h-0 flex-1 flex-col rounded-lg">
       <div className="flex flex-col gap-3 border-b border-border-subtle px-4 py-3 xl:flex-row xl:items-center xl:justify-between">
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 text-sm font-semibold text-text-primary">
             <ImagePlus size={17} className="text-accent" />
             生成画廊
@@ -80,9 +84,10 @@ export default function Gallery({
           <p className="mt-1 truncate text-xs text-text-muted">
             {currentPrompt ? currentPrompt : "等待创建第一组图片视觉。"}
           </p>
+          {hasImages && <p className="mt-2 text-xs leading-5 text-text-secondary">若网络不佳或下载失败，请点击图片下方的“备用下载”。</p>}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2 whitespace-nowrap">
           {(currentPrompt || hasImages) && (
             <button
               type="button"
@@ -135,6 +140,17 @@ export default function Gallery({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        {visibleDownloadError && <div role="alert" aria-label="图片下载未完成" className="mb-4 rounded-lg border border-warning/30 bg-warning/5 p-4">
+          <p className="text-sm font-semibold text-text-primary">{visibleDownloadError.message}</p>
+          <p className="mt-1 text-xs leading-6 text-text-secondary">{visibleDownloadError.detail}</p>
+          <p className="mt-1 text-xs leading-6 text-text-secondary">生成图片仍保留在下方。若网络不佳或下载失败，请点击每张图片下的“备用下载”；也可减少选择数量后重试。</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button type="button" onClick={() => visibleDownloadError.kind === "batch" ? onDownloadBatch() : onDownloadImage(visibleDownloadError.filenames[0])}
+              disabled={isExporting || (visibleDownloadError.kind === "batch" ? selectedCount === 0 : downloadingImages?.has(visibleDownloadError.filenames[0]))}
+              className="inline-flex min-h-10 items-center gap-2 rounded-md border border-accent/40 px-3 text-xs text-accent transition hover:bg-accent/10 disabled:opacity-50"><RefreshCw size={14} />{visibleDownloadError.kind === "batch" ? "重试批量下载" : "重试下载原图"}</button>
+            <button type="button" onClick={onDismissDownloadError} className="min-h-10 rounded-md px-3 text-xs text-text-muted hover:bg-bg-elevated">关闭下载提示</button>
+          </div>
+        </div>}
         {isGenerating && <LoadingState />}
         {!isGenerating && error && <ErrorState error={error} billingMode={billingMode} onRetry={onRetry} />}
         {!isGenerating && !error && !hasImages && <EmptyState mode={mode} presetName={presetName} presetCategory={presetCategory} />}
@@ -243,6 +259,10 @@ export default function Gallery({
                       </button>
                     </div>
                   </div>
+                  <div className="px-3 pb-3">
+                    <BackupImageDownload filename={img.filename} authenticated={authenticated} authHeaders={authHeaders} />
+                    <p className="mt-2 text-xs leading-5 text-text-muted">若网络不佳或下载失败，请点击“备用下载”。</p>
+                  </div>
                 </article>
               );
             })}
@@ -345,7 +365,9 @@ function ErrorState({ error, billingMode, onRetry }) {
         }
       : error;
   const platform = (errorInfo?.billing_mode || billingMode) === "platform";
-  const recovery = platform ? ["请修改提示词或更换参考图重试"] : errorInfo?.recovery?.length
+  const referenceUploadFailed = ["REFERENCE_UPLOAD_FAILED", "REFERENCE_IMAGE_INVALID"].includes(errorInfo?.code);
+  const timedOut = errorInfo?.code === 'IMAGE_PROVIDER_TIMEOUT';
+  const recovery = timedOut ? errorInfo?.recovery?.length ? errorInfo.recovery : ['至少等待 2 分钟后再尝试；已有任务请先查询原任务，勿重复提交。'] : referenceUploadFailed ? ["稍后重试上传", "持续失败请联系站主"] : platform ? ["请修改提示词或更换参考图重试。不同模型的审核力度不同，可更换不同的模型进行尝试。"] : errorInfo?.recovery?.length
     ? errorInfo.recovery
     : ["检查 API Key", "确认后端进程", "重新发起生成"];
   const upstream = platform ? errorInfo?.upstream_error : null;
@@ -361,7 +383,7 @@ function ErrorState({ error, billingMode, onRetry }) {
           {errorInfo?.message || "画廊已准备好，当前生成服务暂时没有完成响应。"}
         </h2>
         <p className={`mt-3 max-w-lg text-sm leading-7 text-text-muted${platform ? " whitespace-pre-line" : ""}`}>
-          {platform ? PLATFORM_FAILURE_DETAIL : errorInfo?.detail ||
+          {timedOut ? errorInfo?.detail || '图片生成服务响应超时，可能是服务繁忙或上游处理耗时过长。已有任务请先查询原任务。' : referenceUploadFailed ? "参考图未完成上传，尚未提交生图任务。请稍后重试上传；若持续失败，请联系站主。" : platform ? PLATFORM_FAILURE_DETAIL : errorInfo?.detail ||
             "你仍然可以编辑提示词、调整参数和复用历史。确认图片服务可用后，重新连接即可继续生成。"}
         </p>
         <div className="mt-5 flex flex-wrap gap-2">
@@ -371,14 +393,14 @@ function ErrorState({ error, billingMode, onRetry }) {
             </span>
           ))}
         </div>
-        <button
+        {!errorInfo?.submission_unknown && <button
           type="button"
           onClick={onRetry}
           className="mt-5 inline-flex min-h-11 items-center gap-2 rounded-lg bg-accent px-4 text-sm font-medium text-white transition hover:bg-accent-hover"
         >
           <RefreshCw size={16} />
           重新生成
-        </button>
+        </button>}
       </div>
 
       <div className="rounded-lg border border-border-default bg-bg-primary/62 p-5">
