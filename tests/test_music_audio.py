@@ -55,7 +55,7 @@ class ReferenceTests(unittest.TestCase):
         with self.assertRaises(MusicError): audio_metadata(b"x"*(MAX_BYTES+1), "mp3")
 
     def test_real_mp3_is_verified_with_the_decoder_instead_of_its_filename(self):
-        fixture = Path(__file__).resolve().parents[1] / "artifacts/suno-tools-20261024/fixtures/tone.mp3"
+        fixture = Path(__file__).resolve().parents[1] / "tests/fixtures/reference-tone.mp3"
         info = audio_metadata(fixture.read_bytes(), "mp3")
         self.assertAlmostEqual(info["duration"], 2, delta=.15)
         for content in (wav(), b"ID3not-a-valid-mp3", b"\xff"):
